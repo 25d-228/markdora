@@ -121,8 +121,11 @@ mod tests {
     use std::{
         fs,
         path::{Path, PathBuf},
+        sync::atomic::{AtomicUsize, Ordering},
         time::{SystemTime, UNIX_EPOCH},
     };
+
+    static NEXT_TEST_DIRECTORY: AtomicUsize = AtomicUsize::new(0);
 
     struct TestDirectory(PathBuf);
 
@@ -132,8 +135,11 @@ mod tests {
                 .duration_since(UNIX_EPOCH)
                 .expect("system time must follow the Unix epoch")
                 .as_nanos();
-            let path = std::env::temp_dir()
-                .join(format!("markdora-preview-{}-{unique}", std::process::id()));
+            let sequence = NEXT_TEST_DIRECTORY.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!(
+                "markdora-preview-{}-{unique}-{sequence}",
+                std::process::id()
+            ));
             fs::create_dir(&path).expect("test directory should be created");
             Self(path)
         }
