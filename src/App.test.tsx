@@ -184,6 +184,7 @@ describe("single-document workflow", () => {
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() => expect(fileSystemMocks.writeTextFile).toHaveBeenCalled());
 
+    expect(editor).toBeEnabled();
     fireEvent.change(editor, { target: { value: "edit made during save" } });
     write.resolve();
 
@@ -217,7 +218,7 @@ describe("single-document workflow", () => {
     expect(screen.queryByText("Unsaved")).not.toBeInTheDocument();
   });
 
-  it("creates an empty document and replaces the old state only after writing", async () => {
+  it("protects the editor while New writes before replacing the document", async () => {
     const write = deferred<void>();
     fileSystemMocks.writeTextFile.mockReturnValueOnce(write.promise);
     render(<App />);
@@ -235,10 +236,12 @@ describe("single-document workflow", () => {
     );
     expect(editor).toHaveValue("unsaved old contents");
     expect(screen.getByText("old.md")).toBeInTheDocument();
+    expect(editor).toBeDisabled();
 
     write.resolve();
 
     await waitFor(() => expect(editor).toHaveValue(""));
+    expect(editor).toBeEnabled();
     expect(screen.getByText("untitled.md")).toBeInTheDocument();
     expect(screen.queryByText("Unsaved")).not.toBeInTheDocument();
     expect(dialogMocks.save).toHaveBeenCalledWith({
@@ -246,6 +249,33 @@ describe("single-document workflow", () => {
       filters: [{ extensions: ["md"], name: "Markdown" }],
       title: "Create Markdown document",
     });
+  });
+
+  it("protects the editor while Open reads before replacing the document", async () => {
+    const read = deferred<string>();
+    render(<App />);
+    const editor = await openDocument("C:\\notes\\old.md", "old contents");
+    fireEvent.change(editor, { target: { value: "unsaved old contents" } });
+    dialogMocks.open.mockResolvedValueOnce("C:\\notes\\replacement.md");
+    fileSystemMocks.readTextFile.mockReturnValueOnce(read.promise);
+
+    fireEvent.click(screen.getByRole("button", { name: "Open" }));
+
+    await waitFor(() =>
+      expect(fileSystemMocks.readTextFile).toHaveBeenCalledWith(
+        "C:\\notes\\replacement.md",
+      ),
+    );
+    expect(editor).toHaveValue("unsaved old contents");
+    expect(screen.getByText("old.md")).toBeInTheDocument();
+    expect(editor).toBeDisabled();
+
+    read.resolve("replacement contents");
+
+    await waitFor(() => expect(editor).toHaveValue("replacement contents"));
+    expect(editor).toBeEnabled();
+    expect(screen.getByText("replacement.md")).toBeInTheDocument();
+    expect(screen.queryByText("Unsaved")).not.toBeInTheDocument();
   });
 
   it("leaves a dirty document unchanged when open or create is canceled", async () => {

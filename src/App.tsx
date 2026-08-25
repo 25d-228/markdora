@@ -45,6 +45,7 @@ function App() {
   const [document, setDocument] = useState<DocumentState | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [operationPending, setOperationPending] = useState(false);
+  const [replacementPending, setReplacementPending] = useState(false);
   const operationPendingRef = useRef(false);
   const dirty = document !== null && document.content !== document.persistedContent;
   const dirtyRef = useRef(dirty);
@@ -53,19 +54,21 @@ function App() {
     dirtyRef.current = dirty;
   }, [dirty]);
 
-  function beginOperation() {
+  function beginOperation(protectEditor = false) {
     if (operationPendingRef.current) {
       return false;
     }
 
     operationPendingRef.current = true;
     setOperationPending(true);
+    setReplacementPending(protectEditor);
     return true;
   }
 
   function finishOperation() {
     operationPendingRef.current = false;
     setOperationPending(false);
+    setReplacementPending(false);
   }
 
   async function confirmDiscard(message: string) {
@@ -77,7 +80,7 @@ function App() {
   }
 
   async function handleNew() {
-    if (!beginOperation()) {
+    if (!beginOperation(true)) {
       return;
     }
 
@@ -119,7 +122,7 @@ function App() {
   }
 
   async function handleOpen() {
-    if (!beginOperation()) {
+    if (!beginOperation(true)) {
       return;
     }
 
@@ -309,6 +312,7 @@ function App() {
           <Textarea
             aria-label="Markdown source"
             className="h-full min-h-0 min-w-0 resize-none p-4 font-mono leading-6"
+            disabled={replacementPending}
             onChange={(event) => {
               const content = event.target.value;
               setDocument((currentDocument) =>
