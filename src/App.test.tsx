@@ -195,6 +195,34 @@ describe("single-document workflow", () => {
     expect(screen.getByText("Unsaved")).toBeInTheDocument();
   });
 
+  it("blocks close while a save can change the persisted baseline", async () => {
+    const write = deferred<void>();
+    fileSystemMocks.writeTextFile.mockReturnValueOnce(write.promise);
+    render(<App />);
+    await waitFor(() => expect(closeHandler).toBeDefined());
+    const editor = await openDocument("C:\\notes\\draft.md", "A");
+    fireEvent.change(editor, { target: { value: "B" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() =>
+      expect(fileSystemMocks.writeTextFile).toHaveBeenCalledWith(
+        "C:\\notes\\draft.md",
+        "B",
+      ),
+    );
+
+    fireEvent.change(editor, { target: { value: "A" } });
+    const closeEvent = { preventDefault: vi.fn() };
+    await closeHandler?.(closeEvent);
+
+    expect(closeEvent.preventDefault).toHaveBeenCalledOnce();
+    expect(dialogMocks.confirm).not.toHaveBeenCalled();
+
+    write.resolve();
+
+    await waitFor(() => expect(screen.getByText("Unsaved")).toBeInTheDocument());
+    expect(editor).toHaveValue("A");
+  });
+
   it("preserves the buffer and Unsaved state after a failed save", async () => {
     fileSystemMocks.writeTextFile.mockRejectedValueOnce(
       new Error("disk is read-only"),

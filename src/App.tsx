@@ -200,12 +200,12 @@ function App() {
 
     void getCurrentWindow()
       .onCloseRequested(async (event) => {
-        if (!dirtyRef.current) {
+        if (operationPendingRef.current) {
+          event.preventDefault();
           return;
         }
 
-        if (operationPendingRef.current) {
-          event.preventDefault();
+        if (!dirtyRef.current) {
           return;
         }
 
