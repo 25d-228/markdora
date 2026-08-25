@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import App from "./App";
@@ -23,6 +23,15 @@ const windowMocks = vi.hoisted(() => ({
   unlisten: vi.fn(),
 }));
 
+const coreMocks = vi.hoisted(() => ({
+  convertFileSrc: vi.fn(),
+  invoke: vi.fn(),
+}));
+
+const openerMocks = vi.hoisted(() => ({
+  openUrl: vi.fn(),
+}));
+
 type CloseEvent = { preventDefault: () => void };
 type CloseHandler = (event: CloseEvent) => void | Promise<void>;
 
@@ -31,6 +40,8 @@ let closeHandler: CloseHandler | undefined;
 vi.mock("@tauri-apps/plugin-dialog", () => dialogMocks);
 vi.mock("@tauri-apps/plugin-fs", () => fileSystemMocks);
 vi.mock("@tauri-apps/api/path", () => pathMocks);
+vi.mock("@tauri-apps/api/core", () => coreMocks);
+vi.mock("@tauri-apps/plugin-opener", () => openerMocks);
 vi.mock("@tauri-apps/api/window", () => ({
   getCurrentWindow: () => ({
     onCloseRequested: windowMocks.onCloseRequested,
@@ -72,6 +83,11 @@ describe("single-document workflow", () => {
     dialogMocks.save.mockReset().mockResolvedValue(null);
     fileSystemMocks.readTextFile.mockReset();
     fileSystemMocks.writeTextFile.mockReset().mockResolvedValue(undefined);
+    coreMocks.convertFileSrc
+      .mockReset()
+      .mockImplementation((path: string) => `asset://${path}`);
+    coreMocks.invoke.mockReset();
+    openerMocks.openUrl.mockReset().mockResolvedValue(undefined);
     pathMocks.basename.mockReset().mockImplementation(async (path: string) => {
       const segments = path.split(/[\\/]/);
       return segments[segments.length - 1] ?? path;
@@ -92,6 +108,7 @@ describe("single-document workflow", () => {
     expect(screen.getByRole("button", { name: "New" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Open" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+    expect(screen.queryByRole("group", { name: "View mode" })).not.toBeInTheDocument();
     expect(
       screen.queryByRole("textbox", { name: "Markdown source" }),
     ).not.toBeInTheDocument();
@@ -148,6 +165,238 @@ describe("single-document workflow", () => {
 
     expect(screen.queryByText("Unsaved")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+  });
+
+  it("switches Edit, Preview, and Split without changing the buffer or dirty state", async () => {
+    render(<App />);
+    const editor = await openDocument("C:\\notes\\modes.md", "original");
+    const editButton = screen.getByRole("button", { name: "Edit" });
+    const splitButton = screen.getByRole("button", { name: "Split" });
+    const previewButton = screen.getByRole("button", { name: "Preview" });
+    const viewModeControl = screen.getByRole("group", { name: "View mode" });
+
+    expect(within(viewModeControl).getAllByRole("button")).toHaveLength(3);
+    expect(editButton).toHaveAttribute("aria-pressed", "true");
+    expect(splitButton).toHaveAttribute("aria-pressed", "false");
+    expect(previewButton).toHaveAttribute("aria-pressed", "false");
+    expect(screen.queryByRole("region", { name: "Markdown preview" })).not.toBeInTheDocument();
+
+    fireEvent.change(editor, { target: { value: "# Unsaved heading" } });
+    fireEvent.click(previewButton);
+
+    expect(screen.queryByRole("textbox", { name: "Markdown source" })).not.toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Markdown preview" })).toHaveTextContent(
+      "Unsaved heading",
+    );
+    expect(screen.getByText("Unsaved")).toBeInTheDocument();
+    expect(previewButton).toHaveAttribute("aria-pressed", "true");
+
+    fireEvent.click(splitButton);
+
+    expect(screen.getByRole("textbox", { name: "Markdown source" })).toHaveValue(
+      "# Unsaved heading",
+    );
+    expect(screen.getByRole("region", { name: "Markdown preview" })).toBeInTheDocument();
+    expect(screen.getByText("Unsaved")).toBeInTheDocument();
+  });
+
+  it("updates a GitHub-Flavored Markdown preview from unsaved source edits", async () => {
+    render(<App />);
+    const editor = await openDocument("C:\\notes\\preview.md", "start");
+    fireEvent.click(screen.getByRole("button", { name: "Split" }));
+
+    fireEvent.change(editor, {
+      target: {
+        value: [
+          "# Live heading",
+          "",
+          "~~removed~~ and `inline code`",
+          "",
+          "| Name | Value |",
+          "| --- | --- |",
+          "| One | Two |",
+          "",
+          "- [ ] pending task",
+          "",
+          "```text",
+          "line one",
+          "  line two",
+          "```",
+        ].join("\n"),
+      },
+    });
+
+    const preview = screen.getByRole("region", { name: "Markdown preview" });
+    expect(within(preview).getByRole("heading", { name: "Live heading" })).toBeInTheDocument();
+    expect(within(preview).getByText("removed").tagName).toBe("DEL");
+    expect(within(preview).getByRole("table")).toBeInTheDocument();
+    expect(within(preview).getByRole("checkbox")).toBeDisabled();
+    expect(within(preview).getByText("inline code").tagName).toBe("CODE");
+    expect(within(preview).getByText(/line one/)).toHaveTextContent("line two");
+  });
+
+  it("renders an empty active document as an empty preview", async () => {
+    render(<App />);
+    await openDocument("C:\\notes\\empty.md", "");
+    fireEvent.click(screen.getByRole("button", { name: "Preview" }));
+
+    expect(screen.getByRole("region", { name: "Markdown preview" })).toBeEmptyDOMElement();
+    expect(screen.queryByText("No document open")).not.toBeInTheDocument();
+  });
+
+  it("does not turn raw HTML into active preview elements", async () => {
+    render(<App />);
+    await openDocument(
+      "C:\\notes\\unsafe.md",
+      "Before\n\n<script>alert(1)</script><iframe title=\"unsafe\"></iframe><style>body{display:none}</style><button onclick=\"alert(1)\">Unsafe</button>\n\nAfter",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Preview" }));
+
+    const preview = screen.getByRole("region", { name: "Markdown preview" });
+    expect(preview).toHaveTextContent("Before");
+    expect(preview).toHaveTextContent("After");
+    expect(preview.querySelector("script")).toBeNull();
+    expect(preview.querySelector("iframe")).toBeNull();
+    expect(preview.querySelector("style")).toBeNull();
+    expect(preview.querySelector("button")).toBeNull();
+    expect(preview.querySelector("[onclick]")).toBeNull();
+  });
+
+  it("opens approved external links outside the webview and blocks other destinations", async () => {
+    render(<App />);
+    await openDocument(
+      "C:\\notes\\links.md",
+      "[Website](https://example.com) [Email](mailto:hello@example.com) [Script](javascript:alert(1)) [VBScript](vbscript:msgbox(1)) [Data](data:text/html,bad) [File](file:///tmp/bad) [Protocol relative](//example.com) [Relative](other.md)",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Preview" }));
+    const locationBeforeClick = window.location.href;
+
+    fireEvent.click(screen.getByRole("link", { name: "Website" }));
+    await waitFor(() =>
+      expect(openerMocks.openUrl).toHaveBeenCalledWith("https://example.com"),
+    );
+    expect(window.location.href).toBe(locationBeforeClick);
+    expect(screen.queryByRole("link", { name: "Script" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "VBScript" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Data" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "File" })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("link", { name: "Protocol relative" }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Relative" })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByText("Script"));
+    fireEvent.click(screen.getByText("Relative"));
+    expect(openerMocks.openUrl).toHaveBeenCalledOnce();
+  });
+
+  it("shows an opener failure without replacing the active preview", async () => {
+    openerMocks.openUrl.mockRejectedValueOnce(new Error("handler unavailable"));
+    render(<App />);
+    await openDocument(
+      "C:\\notes\\links.md",
+      "# Keep this\n\n[Website](https://example.com)",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Preview" }));
+    fireEvent.click(screen.getByRole("link", { name: "Website" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Could not open the external link: handler unavailable",
+    );
+    expect(screen.getByText("links.md")).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Markdown preview" })).toHaveTextContent(
+      "Keep this",
+    );
+  });
+
+  it("authorizes valid relative images and preserves alt text when unavailable", async () => {
+    coreMocks.invoke.mockImplementation(
+      (_command: string, argumentsValue: { imageSource: string }) =>
+        argumentsValue.imageSource === "images/diagram.png"
+          ? Promise.resolve("C:\\notes\\images\\diagram.png")
+          : Promise.reject(new Error("missing")),
+    );
+    render(<App />);
+    await openDocument(
+      "C:\\notes\\images.md",
+      "![Diagram](images/diagram.png \"Diagram title\") ![Missing](images/missing.jpg)",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Preview" }));
+
+    await waitFor(() =>
+      expect(screen.getByRole("img", { name: "Diagram" })).toHaveAttribute(
+        "src",
+        "asset://C:\\notes\\images\\diagram.png",
+      ),
+    );
+    const image = screen.getByRole("img", { name: "Diagram" });
+    expect(coreMocks.invoke).toHaveBeenCalledWith("authorize_preview_image", {
+      documentPath: "C:\\notes\\images.md",
+      imageSource: "images/diagram.png",
+    });
+    expect(coreMocks.convertFileSrc).toHaveBeenCalledWith(
+      "C:\\notes\\images\\diagram.png",
+    );
+    expect(image).toHaveAttribute("title", "Diagram title");
+    expect(await screen.findByRole("img", { name: "Missing" })).toHaveTextContent(
+      "Missing",
+    );
+  });
+
+  it("does not authorize remote, absolute, traversal, or unsupported images", async () => {
+    render(<App />);
+    await openDocument(
+      "C:\\notes\\blocked.md",
+      [
+        "![Remote](https://example.com/image.png)",
+        "![Absolute](/tmp/image.png)",
+        "![Traversal](../image.png)",
+        "![Unsupported](images/image.svg)",
+      ].join("\n"),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Preview" }));
+
+    for (const name of ["Remote", "Absolute", "Traversal", "Unsupported"]) {
+      expect(screen.getByRole("img", { name })).toHaveTextContent(name);
+    }
+    expect(coreMocks.invoke).not.toHaveBeenCalled();
+  });
+
+  it("ignores a stale local-image authorization result", async () => {
+    const oldImage = deferred<string>();
+    const newImage = deferred<string>();
+    coreMocks.invoke.mockImplementation(
+      (_command: string, argumentsValue: { imageSource: string }) =>
+        argumentsValue.imageSource === "images/old.png"
+          ? oldImage.promise
+          : newImage.promise,
+    );
+    render(<App />);
+    const editor = await openDocument(
+      "C:\\notes\\stale.md",
+      "![Old image](images/old.png)",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Split" }));
+    await waitFor(() => expect(coreMocks.invoke).toHaveBeenCalledOnce());
+
+    fireEvent.change(editor, { target: { value: "![New image](images/new.png)" } });
+    await waitFor(() => expect(coreMocks.invoke).toHaveBeenCalledTimes(2));
+    await act(async () => {
+      oldImage.resolve("C:\\notes\\images\\old.png");
+    });
+
+    expect(coreMocks.convertFileSrc).not.toHaveBeenCalledWith(
+      "C:\\notes\\images\\old.png",
+    );
+    newImage.resolve("C:\\notes\\images\\new.png");
+
+    await waitFor(() =>
+      expect(screen.getByRole("img", { name: "New image" })).toHaveAttribute(
+        "src",
+        "asset://C:\\notes\\images\\new.png",
+      ),
+    );
+    expect(screen.queryByRole("img", { name: "Old image" })).not.toBeInTheDocument();
   });
 
   it("saves the exact path and buffer, clearing Unsaved only after success", async () => {

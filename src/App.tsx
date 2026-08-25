@@ -12,6 +12,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
+import { MarkdownPreview } from "@/MarkdownPreview";
 
 type DocumentState = {
   content: string;
@@ -19,6 +20,8 @@ type DocumentState = {
   path: string;
   persistedContent: string;
 };
+
+type ViewMode = "edit" | "split" | "preview";
 
 const markdownFilter = [{ name: "Markdown", extensions: ["md"] }];
 
@@ -46,6 +49,7 @@ function App() {
   const [error, setError] = useState<string | null>(null);
   const [operationPending, setOperationPending] = useState(false);
   const [replacementPending, setReplacementPending] = useState(false);
+  const [viewMode, setViewMode] = useState<ViewMode>("edit");
   const operationPendingRef = useRef(false);
   const dirty = document !== null && document.content !== document.persistedContent;
   const dirtyRef = useRef(dirty);
@@ -271,23 +275,40 @@ function App() {
             </div>
           ) : null}
         </div>
-        <nav
-          aria-label="Document actions"
-          className="flex shrink-0 items-center gap-2"
-        >
-          <Button disabled={operationPending} onClick={handleNew}>
-            New
-          </Button>
-          <Button disabled={operationPending} onClick={handleOpen}>
-            Open
-          </Button>
-          <Button
-            disabled={!document || !dirty || operationPending}
-            onClick={handleSave}
+        <div className="flex shrink-0 flex-wrap items-center justify-end gap-3">
+          {document ? (
+            <div aria-label="View mode" className="flex items-center gap-1" role="group">
+              {(["edit", "split", "preview"] as const).map((mode) => (
+                <Button
+                  aria-pressed={viewMode === mode}
+                  key={mode}
+                  onClick={() => setViewMode(mode)}
+                  size="sm"
+                  variant={viewMode === mode ? "default" : "outline"}
+                >
+                  {mode[0].toUpperCase() + mode.slice(1)}
+                </Button>
+              ))}
+            </div>
+          ) : null}
+          <nav
+            aria-label="Document actions"
+            className="flex items-center gap-2"
           >
-            Save
-          </Button>
-        </nav>
+            <Button disabled={operationPending} onClick={handleNew}>
+              New
+            </Button>
+            <Button disabled={operationPending} onClick={handleOpen}>
+              Open
+            </Button>
+            <Button
+              disabled={!document || !dirty || operationPending}
+              onClick={handleSave}
+            >
+              Save
+            </Button>
+          </nav>
+        </div>
       </header>
 
       {error ? (
@@ -304,29 +325,47 @@ function App() {
       <main
         className={
           document
-            ? "flex min-h-0 min-w-0 flex-1 p-6"
+            ? `grid min-h-0 min-w-0 flex-1 p-6 ${
+                viewMode === "split" ? "grid-cols-2 gap-4" : "grid-cols-1"
+              }`
             : "flex min-h-0 min-w-0 flex-1 items-center justify-center p-6"
         }
       >
         {document ? (
-          <Textarea
-            aria-label="Markdown source"
-            className="h-full min-h-0 min-w-0 resize-none p-4 font-mono leading-6"
-            disabled={replacementPending}
-            onChange={(event) => {
-              const content = event.target.value;
-              setDocument((currentDocument) =>
-                currentDocument
-                  ? {
-                      ...currentDocument,
-                      content,
-                    }
-                  : currentDocument,
-              );
-            }}
-            spellCheck={false}
-            value={document.content}
-          />
+          <>
+            {viewMode !== "preview" ? (
+              <Textarea
+                aria-label="Markdown source"
+                className="h-full min-h-0 min-w-0 resize-none overflow-auto p-4 font-mono leading-6"
+                disabled={replacementPending}
+                onChange={(event) => {
+                  const content = event.target.value;
+                  setDocument((currentDocument) =>
+                    currentDocument
+                      ? {
+                          ...currentDocument,
+                          content,
+                        }
+                      : currentDocument,
+                  );
+                }}
+                spellCheck={false}
+                value={document.content}
+              />
+            ) : null}
+            {viewMode !== "edit" ? (
+              <MarkdownPreview
+                content={document.content}
+                documentPath={document.path}
+                onExternalLinkError={(linkError) =>
+                  setError(
+                    `Could not open the external link: ${describeError(linkError)}`,
+                  )
+                }
+                onExternalLinkSuccess={() => setError(null)}
+              />
+            ) : null}
+          </>
         ) : (
           <Card className="w-full max-w-2xl">
             <CardHeader>
