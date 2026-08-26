@@ -11,6 +11,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { MarkdownPreview } from "@/MarkdownPreview";
 
@@ -22,6 +23,11 @@ type DocumentState = {
 };
 
 type ViewMode = "edit" | "split" | "preview";
+
+type MatchRange = {
+  end: number;
+  start: number;
+};
 
 const markdownFilter = [{ name: "Markdown", extensions: ["md"] }];
 
@@ -44,6 +50,32 @@ function describeError(error: unknown) {
   return "Unknown error";
 }
 
+function findLiteralMatches(content: string, query: string) {
+  if (!query) {
+    return [];
+  }
+
+  const matches: MatchRange[] = [];
+  const normalizedQuery = query.toLowerCase();
+  let position = 0;
+
+  while (position <= content.length - query.length) {
+    const candidate = content.slice(position, position + query.length);
+    if (candidate.toLowerCase() === normalizedQuery) {
+      matches.push({ start: position, end: position + query.length });
+      position += query.length;
+    } else {
+      position += 1;
+    }
+  }
+
+  return matches;
+}
+
+function findMatchAtOrAfter(matches: MatchRange[], position: number) {
+  return matches.find((match) => match.start >= position) ?? matches[0] ?? null;
+}
+
 function App() {
   const [document, setDocument] = useState<DocumentState | null>(null);
   const [documentError, setDocumentError] = useState<string | null>(null);
@@ -53,13 +85,192 @@ function App() {
   const [operationPending, setOperationPending] = useState(false);
   const [replacementPending, setReplacementPending] = useState(false);
   const [viewMode, setViewMode] = useState<ViewMode>("edit");
+  const [findOpen, setFindOpen] = useState(false);
+  const [findValue, setFindValue] = useState("");
+  const [replaceValue, setReplaceValue] = useState("");
+  const [matchPosition, setMatchPosition] = useState<number | null>(null);
   const operationPendingRef = useRef(false);
+  const editorRef = useRef<HTMLTextAreaElement>(null);
+  const findInputRef = useRef<HTMLInputElement>(null);
   const dirty = document !== null && document.content !== document.persistedContent;
   const dirtyRef = useRef(dirty);
+  const matches =
+    findOpen && document
+      ? findLiteralMatches(document.content, findValue)
+      : [];
+  const activeMatchIndex =
+    matchPosition === null
+      ? -1
+      : matches.findIndex((match) => match.start === matchPosition);
+  const activeMatch =
+    activeMatchIndex === -1 ? null : matches[activeMatchIndex];
+  const activeMatchStart = activeMatch?.start ?? null;
+  const activeMatchEnd = activeMatch?.end ?? null;
+  const documentContent = document?.content ?? "";
 
   useEffect(() => {
     dirtyRef.current = dirty;
   }, [dirty]);
+
+  useEffect(() => {
+    if (findOpen) {
+      findInputRef.current?.focus();
+    }
+  }, [findOpen]);
+
+  useEffect(() => {
+    if (
+      findOpen &&
+      viewMode !== "preview" &&
+      activeMatchStart !== null &&
+      activeMatchEnd !== null
+    ) {
+      const editor = editorRef.current;
+      if (editor) {
+        const focusedElement = globalThis.document.activeElement;
+        editor.focus({ preventScroll: true });
+        editor.setSelectionRange(activeMatchStart, activeMatchEnd);
+        if (
+          focusedElement instanceof HTMLElement &&
+          focusedElement !== editor
+        ) {
+          focusedElement.focus({ preventScroll: true });
+        }
+      }
+    }
+  }, [activeMatchEnd, activeMatchStart, documentContent, findOpen, viewMode]);
+
+  function resetFindAndReplace() {
+    setFindOpen(false);
+    setFindValue("");
+    setReplaceValue("");
+    setMatchPosition(null);
+  }
+
+  function closeFindAndReplace() {
+    const editor = editorRef.current;
+    const caretPosition = editor?.selectionEnd ?? 0;
+    resetFindAndReplace();
+    if (editor) {
+      editor.setSelectionRange(caretPosition, caretPosition);
+      editor.focus();
+    }
+  }
+
+  function handleViewModeChange(mode: ViewMode) {
+    if (mode === "preview") {
+      resetFindAndReplace();
+    }
+    setViewMode(mode);
+  }
+
+  function handleOpenFind() {
+    if (!document || replacementPending) {
+      return;
+    }
+
+    if (viewMode === "preview") {
+      setViewMode("edit");
+    }
+    if (findOpen) {
+      findInputRef.current?.focus();
+    } else {
+      const editor = editorRef.current;
+      if (editor) {
+        editor.setSelectionRange(editor.selectionEnd, editor.selectionEnd);
+      }
+      setFindOpen(true);
+    }
+  }
+
+  function handleFindValueChange(value: string) {
+    setFindValue(value);
+    const nextMatches = document
+      ? findLiteralMatches(document.content, value)
+      : [];
+    setMatchPosition(nextMatches[0]?.start ?? (value ? 0 : null));
+
+    if (nextMatches.length === 0) {
+      const editor = editorRef.current;
+      if (editor) {
+        editor.setSelectionRange(editor.selectionEnd, editor.selectionEnd);
+      }
+    }
+  }
+
+  function handleSourceChange(content: string, selectionPosition: number) {
+    if (findOpen && findValue) {
+      const nextMatches = findLiteralMatches(content, findValue);
+      const priorPosition = matchPosition ?? selectionPosition;
+      const matchAtSameRange = nextMatches.find(
+        (match) => match.start === matchPosition,
+      );
+      const nextMatch =
+        matchAtSameRange ?? findMatchAtOrAfter(nextMatches, priorPosition);
+      setMatchPosition(nextMatch?.start ?? priorPosition);
+    }
+
+    setDocument((currentDocument) =>
+      currentDocument ? { ...currentDocument, content } : currentDocument,
+    );
+  }
+
+  function selectAdjacentMatch(offset: -1 | 1) {
+    if (matches.length === 0) {
+      return;
+    }
+
+    const nextIndex =
+      activeMatchIndex === -1
+        ? offset === 1
+          ? 0
+          : matches.length - 1
+        : (activeMatchIndex + offset + matches.length) % matches.length;
+    setMatchPosition(matches[nextIndex].start);
+  }
+
+  function handleReplace() {
+    if (!document || !activeMatch || replacementPending) {
+      return;
+    }
+
+    const content =
+      document.content.slice(0, activeMatch.start) +
+      replaceValue +
+      document.content.slice(activeMatch.end);
+    const insertedEnd = activeMatch.start + replaceValue.length;
+    const nextMatches = findLiteralMatches(content, findValue);
+    const nextMatch =
+      nextMatches.find((match) => match.start >= insertedEnd) ??
+      nextMatches.find((match) => match.start < activeMatch.start) ??
+      null;
+
+    setDocument((currentDocument) =>
+      currentDocument ? { ...currentDocument, content } : currentDocument,
+    );
+    setMatchPosition(nextMatch?.start ?? insertedEnd);
+  }
+
+  function handleReplaceAll() {
+    if (!document || matches.length === 0 || replacementPending) {
+      return;
+    }
+
+    let sourcePosition = 0;
+    let content = "";
+    for (const match of matches) {
+      content += document.content.slice(sourcePosition, match.start);
+      content += replaceValue;
+      sourcePosition = match.end;
+    }
+    content += document.content.slice(sourcePosition);
+
+    const remainingMatches = findLiteralMatches(content, findValue);
+    setDocument((currentDocument) =>
+      currentDocument ? { ...currentDocument, content } : currentDocument,
+    );
+    setMatchPosition(remainingMatches[0]?.start ?? 0);
+  }
 
   function beginOperation(protectEditor = false) {
     if (operationPendingRef.current) {
@@ -118,6 +329,7 @@ function App() {
         path: selectedPath,
         persistedContent: "",
       });
+      resetFindAndReplace();
       setDocumentError(null);
     } catch (operationError) {
       setDocumentError(
@@ -161,6 +373,7 @@ function App() {
         path: selectedPath,
         persistedContent: content,
       });
+      resetFindAndReplace();
       setDocumentError(null);
     } catch (operationError) {
       setDocumentError(
@@ -285,7 +498,7 @@ function App() {
                 <Button
                   aria-pressed={viewMode === mode}
                   key={mode}
-                  onClick={() => setViewMode(mode)}
+                  onClick={() => handleViewModeChange(mode)}
                   size="sm"
                   variant={viewMode === mode ? "default" : "outline"}
                 >
@@ -293,6 +506,15 @@ function App() {
                 </Button>
               ))}
             </div>
+          ) : null}
+          {document ? (
+            <Button
+              disabled={replacementPending}
+              onClick={handleOpenFind}
+              size="sm"
+            >
+              Find
+            </Button>
           ) : null}
           <nav
             aria-label="Document actions"
@@ -313,6 +535,73 @@ function App() {
           </nav>
         </div>
       </header>
+
+      {document && findOpen ? (
+        <section
+          aria-label="Find and replace"
+          className="flex shrink-0 flex-wrap items-end gap-2 border-b px-6 py-3"
+        >
+          <label className="grid min-w-40 flex-1 gap-1 text-sm font-medium sm:max-w-56">
+            <span>Find</span>
+            <Input
+              disabled={replacementPending}
+              onChange={(event) => handleFindValueChange(event.target.value)}
+              ref={findInputRef}
+              value={findValue}
+            />
+          </label>
+          <label className="grid min-w-40 flex-1 gap-1 text-sm font-medium sm:max-w-56">
+            <span>Replace with</span>
+            <Input
+              disabled={replacementPending}
+              onChange={(event) => setReplaceValue(event.target.value)}
+              value={replaceValue}
+            />
+          </label>
+          <Button
+            disabled={replacementPending || matches.length === 0}
+            onClick={() => selectAdjacentMatch(-1)}
+            size="sm"
+          >
+            Previous match
+          </Button>
+          <Button
+            disabled={replacementPending || matches.length === 0}
+            onClick={() => selectAdjacentMatch(1)}
+            size="sm"
+          >
+            Next match
+          </Button>
+          <Button
+            disabled={replacementPending || activeMatch === null}
+            onClick={handleReplace}
+            size="sm"
+          >
+            Replace
+          </Button>
+          <Button
+            disabled={replacementPending || matches.length === 0}
+            onClick={handleReplaceAll}
+            size="sm"
+          >
+            Replace all
+          </Button>
+          <span
+            aria-live="polite"
+            className="min-w-20 text-center text-sm text-muted-foreground"
+            role="status"
+          >
+            {!findValue
+              ? "Enter text to find"
+              : matches.length === 0
+                ? "No matches"
+                : `${activeMatchIndex + 1} of ${matches.length}`}
+          </span>
+          <Button onClick={closeFindAndReplace} size="sm">
+            Close find and replace
+          </Button>
+        </section>
+      ) : null}
 
       {documentError || externalLinkError ? (
         <div className="shrink-0 space-y-2 px-6 pt-4">
@@ -352,16 +641,12 @@ function App() {
                 className="h-full min-h-0 min-w-0 resize-none overflow-auto p-4 font-mono leading-6"
                 disabled={replacementPending}
                 onChange={(event) => {
-                  const content = event.target.value;
-                  setDocument((currentDocument) =>
-                    currentDocument
-                      ? {
-                          ...currentDocument,
-                          content,
-                        }
-                      : currentDocument,
+                  handleSourceChange(
+                    event.target.value,
+                    event.target.selectionStart,
                   );
                 }}
+                ref={editorRef}
                 spellCheck={false}
                 value={document.content}
               />

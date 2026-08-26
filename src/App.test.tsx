@@ -68,11 +68,16 @@ async function openDocument(
 
   fireEvent.click(screen.getByRole("button", { name: "Open" }));
 
-  const editor = await screen.findByRole("textbox", {
+  const editor = (await screen.findByRole("textbox", {
     name: "Markdown source",
-  });
+  })) as HTMLTextAreaElement;
   await waitFor(() => expect(editor).toHaveValue(content));
   return editor;
+}
+
+function openFindAndReplace() {
+  fireEvent.click(screen.getByRole("button", { name: "Find" }));
+  return screen.getByRole("textbox", { name: "Find" });
 }
 
 describe("single-document workflow", () => {
@@ -108,6 +113,7 @@ describe("single-document workflow", () => {
     expect(screen.getByRole("button", { name: "New" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Open" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Find" })).not.toBeInTheDocument();
     expect(screen.queryByRole("group", { name: "View mode" })).not.toBeInTheDocument();
     expect(
       screen.queryByRole("textbox", { name: "Markdown source" }),
@@ -198,6 +204,307 @@ describe("single-document workflow", () => {
     );
     expect(screen.getByRole("region", { name: "Markdown preview" })).toBeInTheDocument();
     expect(screen.getByText("Unsaved")).toBeInTheDocument();
+  });
+
+  it("opens Find for an active document and returns focus to the editor when closed", async () => {
+    render(<App />);
+    const editor = await openDocument();
+
+    const findInput = openFindAndReplace();
+
+    expect(screen.getByRole("region", { name: "Find and replace" })).toBeInTheDocument();
+    expect(findInput).toHaveFocus();
+    expect(screen.getByRole("textbox", { name: "Replace with" })).toBeInTheDocument();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Close find and replace" }),
+    );
+
+    expect(
+      screen.queryByRole("region", { name: "Find and replace" }),
+    ).not.toBeInTheDocument();
+    expect(editor).toHaveFocus();
+  });
+
+  it("opens Find from Preview in Edit without changing the buffer or dirty state", async () => {
+    render(<App />);
+    const editor = await openDocument("C:\\notes\\find.md", "original");
+    fireEvent.change(editor, { target: { value: "unsaved source" } });
+    fireEvent.click(screen.getByRole("button", { name: "Preview" }));
+
+    openFindAndReplace();
+
+    expect(screen.getByRole("button", { name: "Edit" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    expect(screen.getByRole("textbox", { name: "Markdown source" })).toHaveValue(
+      "unsaved source",
+    );
+    expect(screen.getByText("Unsaved")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Split" }));
+    expect(screen.getByRole("region", { name: "Find and replace" })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Preview" }));
+    expect(
+      screen.queryByRole("region", { name: "Find and replace" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("finds mixed-case text and regular-expression characters literally", async () => {
+    render(<App />);
+    await openDocument(
+      "C:\\notes\\literal.md",
+      "Test test TEST .*?[]()\\^$ and .*?[]()\\^$",
+    );
+    const findInput = openFindAndReplace();
+
+    fireEvent.change(findInput, { target: { value: "test" } });
+    expect(screen.getByRole("status")).toHaveTextContent("1 of 3");
+    expect(findInput).toHaveFocus();
+
+    fireEvent.change(findInput, { target: { value: ".*?[]()\\^$" } });
+    expect(screen.getByRole("status")).toHaveTextContent("1 of 2");
+  });
+
+  it("wraps match navigation and selects exact source ranges", async () => {
+    render(<App />);
+    const editor = await openDocument("C:\\notes\\matches.md", "one ONE one");
+    const findInput = openFindAndReplace();
+    fireEvent.change(findInput, { target: { value: "one" } });
+
+    expect(editor.selectionStart).toBe(0);
+    expect(editor.selectionEnd).toBe(3);
+
+    fireEvent.click(screen.getByRole("button", { name: "Previous match" }));
+    expect(screen.getByRole("status")).toHaveTextContent("3 of 3");
+    expect(editor.selectionStart).toBe(8);
+    expect(editor.selectionEnd).toBe(11);
+
+    fireEvent.click(screen.getByRole("button", { name: "Next match" }));
+    expect(screen.getByRole("status")).toHaveTextContent("1 of 3");
+    expect(editor.selectionStart).toBe(0);
+    expect(editor.selectionEnd).toBe(3);
+
+    fireEvent.click(screen.getByRole("button", { name: "Next match" }));
+    expect(editor.selectionStart).toBe(4);
+    expect(editor.selectionEnd).toBe(7);
+  });
+
+  it("reports empty and unmatched queries and disables invalid actions", async () => {
+    render(<App />);
+    await openDocument("C:\\notes\\none.md", "source");
+    const findInput = openFindAndReplace();
+    const actionNames = [
+      "Previous match",
+      "Next match",
+      "Replace",
+      "Replace all",
+    ];
+
+    expect(screen.getByRole("status")).toHaveTextContent("Enter text to find");
+    for (const name of actionNames) {
+      expect(screen.getByRole("button", { name })).toBeDisabled();
+    }
+
+    fireEvent.change(findInput, { target: { value: "missing" } });
+    expect(screen.getByRole("status")).toHaveTextContent("No matches");
+    for (const name of actionNames) {
+      expect(screen.getByRole("button", { name })).toBeDisabled();
+    }
+  });
+
+  it("replaces one active range, permits deletion, and skips inserted matches", async () => {
+    render(<App />);
+    const editor = await openDocument("C:\\notes\\replace.md", "a middle a");
+    const findInput = openFindAndReplace();
+    fireEvent.change(findInput, { target: { value: "a" } });
+    fireEvent.change(screen.getByRole("textbox", { name: "Replace with" }), {
+      target: { value: "aa" },
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Replace" }));
+
+    expect(editor).toHaveValue("aa middle a");
+    expect(editor.selectionStart).toBe(10);
+    expect(editor.selectionEnd).toBe(11);
+
+    fireEvent.change(screen.getByRole("textbox", { name: "Replace with" }), {
+      target: { value: "" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Replace" }));
+    expect(editor).toHaveValue("aa middle ");
+  });
+
+  it("replaces all from one snapshot without recursively replacing inserted text", async () => {
+    render(<App />);
+    const editor = await openDocument("C:\\notes\\all.md", "a-A! keep");
+    const findInput = openFindAndReplace();
+    fireEvent.change(findInput, { target: { value: "a" } });
+    fireEvent.change(screen.getByRole("textbox", { name: "Replace with" }), {
+      target: { value: "aa" },
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Replace all" }));
+
+    expect(editor).toHaveValue("aa-aa! keep");
+    expect(screen.getByRole("status")).toHaveTextContent("1 of 4");
+    expect(fileSystemMocks.writeTextFile).not.toHaveBeenCalled();
+  });
+
+  it("clears Unsaved when a replacement restores the persisted buffer", async () => {
+    render(<App />);
+    const editor = await openDocument("C:\\notes\\restore.md", "original");
+    fireEvent.change(editor, { target: { value: "changed" } });
+    const findInput = openFindAndReplace();
+    fireEvent.change(findInput, { target: { value: "changed" } });
+    fireEvent.change(screen.getByRole("textbox", { name: "Replace with" }), {
+      target: { value: "original" },
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Replace" }));
+
+    expect(editor).toHaveValue("original");
+    expect(screen.queryByText("Unsaved")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+  });
+
+  it("updates Split preview and dirty state without writing until Save", async () => {
+    render(<App />);
+    await openDocument("C:\\notes\\preview-find.md", "# Old heading");
+    fireEvent.click(screen.getByRole("button", { name: "Split" }));
+    const findInput = openFindAndReplace();
+    fireEvent.change(findInput, { target: { value: "Old" } });
+    fireEvent.change(screen.getByRole("textbox", { name: "Replace with" }), {
+      target: { value: "New" },
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Replace" }));
+
+    expect(
+      screen.getByRole("heading", { name: "New heading" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Unsaved")).toBeInTheDocument();
+    expect(fileSystemMocks.writeTextFile).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() =>
+      expect(fileSystemMocks.writeTextFile).toHaveBeenCalledWith(
+        "C:\\notes\\preview-find.md",
+        "# New heading",
+      ),
+    );
+  });
+
+  it("keeps a replacement made during Save unsaved after the captured write", async () => {
+    const write = deferred<void>();
+    fileSystemMocks.writeTextFile.mockReturnValueOnce(write.promise);
+    render(<App />);
+    const editor = await openDocument("C:\\notes\\save-find.md", "A A");
+    fireEvent.change(editor, { target: { value: "B A" } });
+    const findInput = openFindAndReplace();
+    fireEvent.change(findInput, { target: { value: "A" } });
+    fireEvent.change(screen.getByRole("textbox", { name: "Replace with" }), {
+      target: { value: "C" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() =>
+      expect(fileSystemMocks.writeTextFile).toHaveBeenCalledWith(
+        "C:\\notes\\save-find.md",
+        "B A",
+      ),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Replace" }));
+    expect(editor).toHaveValue("B C");
+    await act(async () => {
+      write.resolve();
+    });
+
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Save" })).toBeEnabled(),
+    );
+    expect(screen.getByText("Unsaved")).toBeInTheDocument();
+    expect(editor).toHaveValue("B C");
+
+    fireEvent.change(editor, { target: { value: "B A" } });
+    expect(screen.queryByText("Unsaved")).not.toBeInTheDocument();
+  });
+
+  it("clears Find only after successful document replacement", async () => {
+    render(<App />);
+    await openDocument("C:\\notes\\old.md", "old text");
+    const findInput = openFindAndReplace();
+    fireEvent.change(findInput, { target: { value: "old" } });
+    fireEvent.change(screen.getByRole("textbox", { name: "Replace with" }), {
+      target: { value: "new" },
+    });
+
+    dialogMocks.save.mockResolvedValueOnce(null);
+    fireEvent.click(screen.getByRole("button", { name: "New" }));
+    await waitFor(() => expect(dialogMocks.save).toHaveBeenCalledOnce());
+    expect(screen.getByRole("textbox", { name: "Find" })).toHaveValue("old");
+
+    dialogMocks.open.mockResolvedValueOnce("C:\\notes\\broken.md");
+    fileSystemMocks.readTextFile.mockRejectedValueOnce(new Error("cannot read"));
+    fireEvent.click(screen.getByRole("button", { name: "Open" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("cannot read");
+    expect(screen.getByRole("textbox", { name: "Replace with" })).toHaveValue(
+      "new",
+    );
+
+    dialogMocks.open.mockResolvedValueOnce("C:\\notes\\next.md");
+    fileSystemMocks.readTextFile.mockResolvedValueOnce("next text");
+    fireEvent.click(screen.getByRole("button", { name: "Open" }));
+    await screen.findByText("next.md");
+    expect(
+      screen.queryByRole("region", { name: "Find and replace" }),
+    ).not.toBeInTheDocument();
+
+    const clearedFindInput = openFindAndReplace();
+    expect(clearedFindInput).toHaveValue("");
+    expect(screen.getByRole("textbox", { name: "Replace with" })).toHaveValue("");
+  });
+
+  it("recomputes matches after manual edits without selecting a stale range", async () => {
+    render(<App />);
+    const editor = await openDocument("C:\\notes\\edit-find.md", "cat xx cat");
+    const findInput = openFindAndReplace();
+    fireEvent.change(findInput, { target: { value: "cat" } });
+    fireEvent.click(screen.getByRole("button", { name: "Next match" }));
+    expect(editor.selectionStart).toBe(7);
+
+    fireEvent.change(editor, { target: { value: "cat yy dog cat" } });
+
+    expect(screen.getByRole("status")).toHaveTextContent("2 of 2");
+    expect(editor.selectionStart).toBe(11);
+    expect(editor.selectionEnd).toBe(14);
+  });
+
+  it("disables Find editing while a document replacement is pending", async () => {
+    const read = deferred<string>();
+    render(<App />);
+    await openDocument("C:\\notes\\pending.md", "find this");
+    const findInput = openFindAndReplace();
+    fireEvent.change(findInput, { target: { value: "find" } });
+    dialogMocks.open.mockResolvedValueOnce("C:\\notes\\next.md");
+    fileSystemMocks.readTextFile.mockReturnValueOnce(read.promise);
+
+    fireEvent.click(screen.getByRole("button", { name: "Open" }));
+    await waitFor(() => expect(findInput).toBeDisabled());
+
+    expect(screen.getByRole("button", { name: "Find" })).toBeDisabled();
+    expect(screen.getByRole("textbox", { name: "Replace with" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Previous match" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Next match" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Replace" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Replace all" })).toBeDisabled();
+
+    read.reject(new Error("cannot read"));
+    expect(await screen.findByRole("alert")).toHaveTextContent("cannot read");
+    expect(screen.getByRole("textbox", { name: "Find" })).toHaveValue("find");
+    expect(findInput).toBeEnabled();
   });
 
   it("updates a GitHub-Flavored Markdown preview from unsaved source edits", async () => {
