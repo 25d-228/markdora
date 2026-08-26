@@ -270,10 +270,31 @@ describe("single-document workflow", () => {
     );
     fireEvent.click(screen.getByRole("button", { name: "Preview" }));
     const locationBeforeClick = window.location.href;
+    const websiteLink = screen.getByRole("link", { name: "Website" });
+    const emailLink = screen.getByRole("link", { name: "Email" });
 
-    fireEvent.click(screen.getByRole("link", { name: "Website" }));
+    expect(websiteLink.tagName).not.toBe("A");
+    expect(websiteLink).not.toHaveAttribute("href");
+    expect(
+      fireEvent(
+        websiteLink,
+        new MouseEvent("auxclick", {
+          bubbles: true,
+          button: 1,
+          cancelable: true,
+        }),
+      ),
+    ).toBe(false);
+    expect(fireEvent.contextMenu(websiteLink)).toBe(false);
+    expect(openerMocks.openUrl).not.toHaveBeenCalled();
+
+    fireEvent.keyDown(websiteLink, { key: "Enter" });
     await waitFor(() =>
       expect(openerMocks.openUrl).toHaveBeenCalledWith("https://example.com"),
+    );
+    fireEvent.click(emailLink);
+    await waitFor(() =>
+      expect(openerMocks.openUrl).toHaveBeenCalledWith("mailto:hello@example.com"),
     );
     expect(window.location.href).toBe(locationBeforeClick);
     expect(screen.queryByRole("link", { name: "Script" })).not.toBeInTheDocument();
@@ -287,7 +308,7 @@ describe("single-document workflow", () => {
 
     fireEvent.click(screen.getByText("Script"));
     fireEvent.click(screen.getByText("Relative"));
-    expect(openerMocks.openUrl).toHaveBeenCalledOnce();
+    expect(openerMocks.openUrl).toHaveBeenCalledTimes(2);
   });
 
   it("shows an opener failure without replacing the active preview", async () => {
@@ -307,6 +328,53 @@ describe("single-document workflow", () => {
     expect(screen.getByRole("region", { name: "Markdown preview" })).toHaveTextContent(
       "Keep this",
     );
+  });
+
+  it("keeps document and external-link errors independent", async () => {
+    fileSystemMocks.writeTextFile.mockRejectedValueOnce(
+      new Error("disk is read-only"),
+    );
+    openerMocks.openUrl
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error("handler unavailable"))
+      .mockResolvedValueOnce(undefined);
+    render(<App />);
+    const editor = await openDocument(
+      "C:\\notes\\links.md",
+      "[Website](https://example.com)",
+    );
+    fireEvent.change(editor, {
+      target: { value: "[Website](https://example.com)\n\nUnsaved" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Split" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    const documentError = await screen.findByText(
+      "Could not save the document: disk is read-only",
+    );
+    const websiteLink = screen.getByRole("link", { name: "Website" });
+
+    fireEvent.click(websiteLink);
+    await waitFor(() => expect(openerMocks.openUrl).toHaveBeenCalledTimes(1));
+    expect(documentError).toBeInTheDocument();
+
+    fireEvent.click(websiteLink);
+    expect(
+      await screen.findByText(
+        "Could not open the external link: handler unavailable",
+      ),
+    ).toBeInTheDocument();
+    expect(documentError).toBeInTheDocument();
+
+    fireEvent.click(websiteLink);
+    await waitFor(() =>
+      expect(
+        screen.queryByText(
+          "Could not open the external link: handler unavailable",
+        ),
+      ).not.toBeInTheDocument(),
+    );
+    expect(documentError).toBeInTheDocument();
   });
 
   it("authorizes valid relative images and preserves alt text when unavailable", async () => {
@@ -341,6 +409,33 @@ describe("single-document workflow", () => {
     expect(await screen.findByRole("img", { name: "Missing" })).toHaveTextContent(
       "Missing",
     );
+  });
+
+  it("keeps an unchanged local image authorized across unrelated source edits", async () => {
+    coreMocks.invoke.mockResolvedValueOnce("C:\\notes\\images\\diagram.png");
+    render(<App />);
+    const editor = await openDocument(
+      "C:\\notes\\images.md",
+      "![Diagram](images/diagram.png)\n\nOriginal text",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Split" }));
+
+    await waitFor(() =>
+      expect(screen.getByRole("img", { name: "Diagram" })).toHaveAttribute(
+        "src",
+        "asset://C:\\notes\\images\\diagram.png",
+      ),
+    );
+    const image = screen.getByRole("img", { name: "Diagram" });
+
+    fireEvent.change(editor, {
+      target: {
+        value: "![Diagram](images/diagram.png)\n\nChanged text",
+      },
+    });
+
+    expect(screen.getByRole("img", { name: "Diagram" })).toBe(image);
+    expect(coreMocks.invoke).toHaveBeenCalledOnce();
   });
 
   it("does not authorize remote, absolute, traversal, or unsupported images", async () => {
@@ -397,6 +492,44 @@ describe("single-document workflow", () => {
       ),
     );
     expect(screen.queryByRole("img", { name: "Old image" })).not.toBeInTheDocument();
+  });
+
+  it("ignores an image result from another document with the same source", async () => {
+    const firstImage = deferred<string>();
+    const secondImage = deferred<string>();
+    coreMocks.invoke
+      .mockReturnValueOnce(firstImage.promise)
+      .mockReturnValueOnce(secondImage.promise);
+    render(<App />);
+    await openDocument(
+      "C:\\notes\\first.md",
+      "![Shared image](images/shared.png)",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Preview" }));
+    await waitFor(() => expect(coreMocks.invoke).toHaveBeenCalledOnce());
+
+    dialogMocks.open.mockResolvedValueOnce("C:\\other\\second.md");
+    fileSystemMocks.readTextFile.mockResolvedValueOnce(
+      "![Shared image](images/shared.png)",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Open" }));
+    await screen.findByText("second.md");
+    await waitFor(() => expect(coreMocks.invoke).toHaveBeenCalledTimes(2));
+
+    await act(async () => {
+      firstImage.resolve("C:\\notes\\images\\shared.png");
+    });
+    expect(coreMocks.convertFileSrc).not.toHaveBeenCalledWith(
+      "C:\\notes\\images\\shared.png",
+    );
+
+    secondImage.resolve("C:\\other\\images\\shared.png");
+    await waitFor(() =>
+      expect(screen.getByRole("img", { name: "Shared image" })).toHaveAttribute(
+        "src",
+        "asset://C:\\other\\images\\shared.png",
+      ),
+    );
   });
 
   it("saves the exact path and buffer, clearing Unsaved only after success", async () => {

@@ -238,8 +238,9 @@
     font-weight: 600;
   }
 
-  .markdown-preview a {
+  .markdown-preview [role="link"] {
     color: var(--foreground);
+    cursor: pointer;
     text-decoration: underline;
     text-underline-offset: 0.2em;
   }

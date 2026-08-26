@@ -46,7 +46,10 @@ function describeError(error: unknown) {
 
 function App() {
   const [document, setDocument] = useState<DocumentState | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [documentError, setDocumentError] = useState<string | null>(null);
+  const [externalLinkError, setExternalLinkError] = useState<string | null>(
+    null,
+  );
   const [operationPending, setOperationPending] = useState(false);
   const [replacementPending, setReplacementPending] = useState(false);
   const [viewMode, setViewMode] = useState<ViewMode>("edit");
@@ -115,9 +118,9 @@ function App() {
         path: selectedPath,
         persistedContent: "",
       });
-      setError(null);
+      setDocumentError(null);
     } catch (operationError) {
-      setError(
+      setDocumentError(
         `Could not create the document: ${describeError(operationError)}`,
       );
     } finally {
@@ -158,9 +161,9 @@ function App() {
         path: selectedPath,
         persistedContent: content,
       });
-      setError(null);
+      setDocumentError(null);
     } catch (operationError) {
-      setError(
+      setDocumentError(
         `Could not open the document: ${describeError(operationError)}`,
       );
     } finally {
@@ -188,9 +191,9 @@ function App() {
           persistedContent: content,
         };
       });
-      setError(null);
+      setDocumentError(null);
     } catch (operationError) {
-      setError(
+      setDocumentError(
         `Could not save the document: ${describeError(operationError)}`,
       );
     } finally {
@@ -226,7 +229,7 @@ function App() {
           }
         } catch (operationError) {
           event.preventDefault();
-          setError(
+          setDocumentError(
             `Could not confirm closing the document: ${describeError(operationError)}`,
           );
         } finally {
@@ -242,7 +245,7 @@ function App() {
       })
       .catch((listenerError) => {
         if (!disposed) {
-          setError(
+          setDocumentError(
             `Could not protect unsaved changes when closing: ${describeError(listenerError)}`,
           );
         }
@@ -311,14 +314,24 @@ function App() {
         </div>
       </header>
 
-      {error ? (
-        <div className="shrink-0 px-6 pt-4">
-          <div
-            className="rounded-md border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive"
-            role="alert"
-          >
-            {error}
-          </div>
+      {documentError || externalLinkError ? (
+        <div className="shrink-0 space-y-2 px-6 pt-4">
+          {documentError ? (
+            <div
+              className="rounded-md border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive"
+              role="alert"
+            >
+              {documentError}
+            </div>
+          ) : null}
+          {externalLinkError ? (
+            <div
+              className="rounded-md border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive"
+              role="alert"
+            >
+              {externalLinkError}
+            </div>
+          ) : null}
         </div>
       ) : null}
 
@@ -358,11 +371,11 @@ function App() {
                 content={document.content}
                 documentPath={document.path}
                 onExternalLinkError={(linkError) =>
-                  setError(
+                  setExternalLinkError(
                     `Could not open the external link: ${describeError(linkError)}`,
                   )
                 }
-                onExternalLinkSuccess={() => setError(null)}
+                onExternalLinkSuccess={() => setExternalLinkError(null)}
               />
             ) : null}
           </>

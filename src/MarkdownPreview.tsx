@@ -1,6 +1,14 @@
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { useEffect, useState } from "react";
+import {
+  createContext,
+  type KeyboardEvent,
+  type MouseEvent,
+  type ReactNode,
+  useContext,
+  useEffect,
+  useState,
+} from "react";
 import Markdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -13,10 +21,16 @@ type MarkdownPreviewProps = {
 
 type LocalImageProps = {
   alt?: string;
-  documentPath: string;
   source?: string;
   title?: string;
 };
+
+type PreviewContextValue = Pick<
+  MarkdownPreviewProps,
+  "documentPath" | "onExternalLinkError" | "onExternalLinkSuccess"
+>;
+
+const PreviewContext = createContext<PreviewContextValue | null>(null);
 
 const supportedImageExtension = /\.(?:png|jpe?g|gif|webp|avif)$/i;
 
@@ -48,21 +62,81 @@ function isPotentialRelativeImage(source: string) {
   return !source.split("/").includes("..");
 }
 
-function LocalImage({ alt = "", documentPath, source, title }: LocalImageProps) {
+function usePreviewContext() {
+  const context = useContext(PreviewContext);
+  if (!context) {
+    throw new Error("Markdown preview components require preview context");
+  }
+
+  return context;
+}
+
+function ExternalLink({
+  children,
+  href,
+}: {
+  children: ReactNode;
+  href: string;
+}) {
+  const { onExternalLinkError, onExternalLinkSuccess } = usePreviewContext();
+
+  function activate() {
+    void openUrl(href).then(onExternalLinkSuccess).catch(onExternalLinkError);
+  }
+
+  function preventBrowserDefault(event: MouseEvent<HTMLSpanElement>) {
+    event.preventDefault();
+  }
+
+  return (
+    <span
+      onAuxClick={preventBrowserDefault}
+      onClick={(event) => {
+        event.preventDefault();
+        if (
+          event.button === 0 &&
+          !event.altKey &&
+          !event.ctrlKey &&
+          !event.metaKey &&
+          !event.shiftKey
+        ) {
+          activate();
+        }
+      }}
+      onContextMenu={preventBrowserDefault}
+      onKeyDown={(event: KeyboardEvent<HTMLSpanElement>) => {
+        if (event.key === "Enter" && !event.repeat) {
+          event.preventDefault();
+          activate();
+        }
+      }}
+      role="link"
+      tabIndex={0}
+    >
+      {children}
+    </span>
+  );
+}
+
+function LocalImage({ alt = "", source, title }: LocalImageProps) {
+  const { documentPath } = usePreviewContext();
   const sourceIsEligible = source !== undefined && isPotentialRelativeImage(source);
   const [resolvedImage, setResolvedImage] = useState<{
     assetUrl: string | null;
+    documentPath: string;
     source: string | undefined;
     unavailable: boolean;
   }>(() => ({
     assetUrl: null,
+    documentPath,
     source,
     unavailable: !sourceIsEligible,
   }));
   const currentImage =
+    resolvedImage.documentPath === documentPath &&
     resolvedImage.source === source
       ? resolvedImage
-      : { assetUrl: null, source, unavailable: !sourceIsEligible };
+      : { assetUrl: null, documentPath, source, unavailable: !sourceIsEligible };
 
   useEffect(() => {
     let stale = false;
@@ -79,6 +153,7 @@ function LocalImage({ alt = "", documentPath, source, title }: LocalImageProps) 
         if (!stale) {
           setResolvedImage({
             assetUrl: convertFileSrc(authorizedPath),
+            documentPath,
             source,
             unavailable: false,
           });
@@ -86,7 +161,12 @@ function LocalImage({ alt = "", documentPath, source, title }: LocalImageProps) 
       })
       .catch(() => {
         if (!stale) {
-          setResolvedImage({ assetUrl: null, source, unavailable: true });
+          setResolvedImage({
+            assetUrl: null,
+            documentPath,
+            source,
+            unavailable: true,
+          });
         }
       });
 
@@ -112,7 +192,12 @@ function LocalImage({ alt = "", documentPath, source, title }: LocalImageProps) 
     <img
       alt={alt}
       onError={() =>
-        setResolvedImage({ assetUrl: null, source, unavailable: true })
+        setResolvedImage({
+          assetUrl: null,
+          documentPath,
+          source,
+          unavailable: true,
+        })
       }
       src={currentImage.assetUrl}
       title={title}
@@ -120,67 +205,53 @@ function LocalImage({ alt = "", documentPath, source, title }: LocalImageProps) 
   );
 }
 
+const components: Components = {
+  a: ({ children, href }) =>
+    href && isApprovedExternalLink(href) ? (
+      <ExternalLink href={href}>{children}</ExternalLink>
+    ) : (
+      <span>{children}</span>
+    ),
+  img: ({ alt, src, title }) => (
+    <LocalImage alt={alt} source={src} title={title} />
+  ),
+  input: ({ node, ...properties }) => {
+    void node;
+    return <input {...properties} disabled readOnly />;
+  },
+};
+
 function MarkdownPreview({
   content,
   documentPath,
   onExternalLinkError,
   onExternalLinkSuccess,
 }: MarkdownPreviewProps) {
-  const components: Components = {
-    a: ({ children, href }) => {
-      if (!href || !isApprovedExternalLink(href)) {
-        return <span>{children}</span>;
-      }
-
-      return (
-        <a
-          href={href}
-          onClick={(event) => {
-            event.preventDefault();
-            void openUrl(href)
-              .then(onExternalLinkSuccess)
-              .catch(onExternalLinkError);
-          }}
-        >
-          {children}
-        </a>
-      );
-    },
-    img: ({ alt, src, title }) => (
-      <LocalImage
-        alt={alt}
-        documentPath={documentPath}
-        source={src}
-        title={title}
-      />
-    ),
-    input: ({ node, ...properties }) => {
-      void node;
-      return <input {...properties} disabled readOnly />;
-    },
-  };
-
   return (
     <section
       aria-label="Markdown preview"
       className="markdown-preview min-h-0 min-w-0 overflow-auto rounded-md border bg-background p-5"
     >
-      <Markdown
-        components={components}
-        remarkPlugins={[remarkGfm]}
-        skipHtml
-        urlTransform={(url, key) => {
-          if (key === "href") {
-            return isApprovedExternalLink(url) ? url : "";
-          }
-          if (key === "src") {
-            return isPotentialRelativeImage(url) ? url : "";
-          }
-          return "";
-        }}
+      <PreviewContext.Provider
+        value={{ documentPath, onExternalLinkError, onExternalLinkSuccess }}
       >
-        {content}
-      </Markdown>
+        <Markdown
+          components={components}
+          remarkPlugins={[remarkGfm]}
+          skipHtml
+          urlTransform={(url, key) => {
+            if (key === "href") {
+              return isApprovedExternalLink(url) ? url : "";
+            }
+            if (key === "src") {
+              return isPotentialRelativeImage(url) ? url : "";
+            }
+            return "";
+          }}
+        >
+          {content}
+        </Markdown>
+      </PreviewContext.Provider>
     </section>
   );
 }
