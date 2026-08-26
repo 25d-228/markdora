@@ -254,7 +254,7 @@ describe("single-document workflow", () => {
 
   it("finds mixed-case text and regular-expression characters literally", async () => {
     render(<App />);
-    await openDocument(
+    const editor = await openDocument(
       "C:\\notes\\literal.md",
       "Test test TEST .*?[]()\\^$ and .*?[]()\\^$",
     );
@@ -263,9 +263,14 @@ describe("single-document workflow", () => {
     fireEvent.change(findInput, { target: { value: "test" } });
     expect(screen.getByRole("status")).toHaveTextContent("1 of 3");
     expect(findInput).toHaveFocus();
+    expect(editor.selectionStart).toBe(0);
+    expect(editor.selectionEnd).toBe(4);
 
     fireEvent.change(findInput, { target: { value: ".*?[]()\\^$" } });
     expect(screen.getByRole("status")).toHaveTextContent("1 of 2");
+    expect(findInput).toHaveFocus();
+    expect(editor.selectionStart).toBe(15);
+    expect(editor.selectionEnd).toBe(25);
   });
 
   it("wraps match navigation and selects exact source ranges", async () => {
@@ -279,15 +284,18 @@ describe("single-document workflow", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Previous match" }));
     expect(screen.getByRole("status")).toHaveTextContent("3 of 3");
+    expect(editor).toHaveFocus();
     expect(editor.selectionStart).toBe(8);
     expect(editor.selectionEnd).toBe(11);
 
     fireEvent.click(screen.getByRole("button", { name: "Next match" }));
     expect(screen.getByRole("status")).toHaveTextContent("1 of 3");
+    expect(editor).toHaveFocus();
     expect(editor.selectionStart).toBe(0);
     expect(editor.selectionEnd).toBe(3);
 
     fireEvent.click(screen.getByRole("button", { name: "Next match" }));
+    expect(editor).toHaveFocus();
     expect(editor.selectionStart).toBe(4);
     expect(editor.selectionEnd).toBe(7);
   });
@@ -327,6 +335,7 @@ describe("single-document workflow", () => {
     fireEvent.click(screen.getByRole("button", { name: "Replace" }));
 
     expect(editor).toHaveValue("aa middle a");
+    expect(editor).toHaveFocus();
     expect(editor.selectionStart).toBe(10);
     expect(editor.selectionEnd).toBe(11);
 
@@ -350,6 +359,9 @@ describe("single-document workflow", () => {
 
     expect(editor).toHaveValue("aa-aa! keep");
     expect(screen.getByRole("status")).toHaveTextContent("1 of 4");
+    expect(editor).toHaveFocus();
+    expect(editor.selectionStart).toBe(0);
+    expect(editor.selectionEnd).toBe(1);
     expect(fileSystemMocks.writeTextFile).not.toHaveBeenCalled();
   });
 

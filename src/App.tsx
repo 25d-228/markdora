@@ -89,9 +89,11 @@ function App() {
   const [findValue, setFindValue] = useState("");
   const [replaceValue, setReplaceValue] = useState("");
   const [matchPosition, setMatchPosition] = useState<number | null>(null);
+  const [selectionRequest, setSelectionRequest] = useState(0);
   const operationPendingRef = useRef(false);
   const editorRef = useRef<HTMLTextAreaElement>(null);
   const findInputRef = useRef<HTMLInputElement>(null);
+  const focusEditorForSelectionRef = useRef(false);
   const dirty = document !== null && document.content !== document.persistedContent;
   const dirtyRef = useRef(dirty);
   const matches =
@@ -127,10 +129,17 @@ function App() {
     ) {
       const editor = editorRef.current;
       if (editor) {
+        const focusEditor = focusEditorForSelectionRef.current;
+        focusEditorForSelectionRef.current = false;
         const focusedElement = globalThis.document.activeElement;
-        editor.focus({ preventScroll: true });
+        if (focusEditor) {
+          editor.focus();
+        } else {
+          editor.focus({ preventScroll: true });
+        }
         editor.setSelectionRange(activeMatchStart, activeMatchEnd);
         if (
+          !focusEditor &&
           focusedElement instanceof HTMLElement &&
           focusedElement !== editor
         ) {
@@ -138,7 +147,19 @@ function App() {
         }
       }
     }
-  }, [activeMatchEnd, activeMatchStart, documentContent, findOpen, viewMode]);
+  }, [
+    activeMatchEnd,
+    activeMatchStart,
+    documentContent,
+    findOpen,
+    selectionRequest,
+    viewMode,
+  ]);
+
+  function requestActiveMatchSelection(focusEditor: boolean) {
+    focusEditorForSelectionRef.current = focusEditor;
+    setSelectionRequest((currentRequest) => currentRequest + 1);
+  }
 
   function resetFindAndReplace() {
     setFindOpen(false);
@@ -190,7 +211,9 @@ function App() {
       : [];
     setMatchPosition(nextMatches[0]?.start ?? (value ? 0 : null));
 
-    if (nextMatches.length === 0) {
+    if (nextMatches.length > 0) {
+      requestActiveMatchSelection(false);
+    } else {
       const editor = editorRef.current;
       if (editor) {
         editor.setSelectionRange(editor.selectionEnd, editor.selectionEnd);
@@ -227,6 +250,7 @@ function App() {
           : matches.length - 1
         : (activeMatchIndex + offset + matches.length) % matches.length;
     setMatchPosition(matches[nextIndex].start);
+    requestActiveMatchSelection(true);
   }
 
   function handleReplace() {
@@ -249,6 +273,9 @@ function App() {
       currentDocument ? { ...currentDocument, content } : currentDocument,
     );
     setMatchPosition(nextMatch?.start ?? insertedEnd);
+    if (nextMatch) {
+      requestActiveMatchSelection(true);
+    }
   }
 
   function handleReplaceAll() {
@@ -270,6 +297,9 @@ function App() {
       currentDocument ? { ...currentDocument, content } : currentDocument,
     );
     setMatchPosition(remainingMatches[0]?.start ?? 0);
+    if (remainingMatches.length > 0) {
+      requestActiveMatchSelection(true);
+    }
   }
 
   function beginOperation(protectEditor = false) {
