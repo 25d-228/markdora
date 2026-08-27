@@ -13,5 +13,12 @@
         "backgroundColor": "#ffffff"
       }
     ]
+  },
+  "bundle": {
+    "windows": {
+      "nsis": {
+        "installerHooks": "windows/installer-hooks.nsh"
+      }
+    }
   }
 }
