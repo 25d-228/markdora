@@ -13,5 +13,15 @@
         "backgroundColor": "#ffffff"
       }
     ]
+  },
+  "bundle": {
+    "resources": {
+      "icons/icon.ico": "markdora-light.ico"
+    },
+    "windows": {
+      "nsis": {
+        "installerHooks": "windows/installer-hooks.nsh"
+      }
+    }
   }
 }
