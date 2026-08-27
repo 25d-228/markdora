@@ -113,6 +113,9 @@ describe("single-document workflow", () => {
     expect(screen.getByRole("button", { name: "New" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Open" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+    expect(
+      screen.queryByRole("button", { name: "Save As" }),
+    ).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Find" })).not.toBeInTheDocument();
     expect(screen.queryByRole("group", { name: "View mode" })).not.toBeInTheDocument();
     expect(
@@ -874,6 +877,297 @@ describe("single-document workflow", () => {
       expect(screen.queryByText("Unsaved")).not.toBeInTheDocument(),
     );
     expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+  });
+
+  it("saves an active document as a selected path and updates it only after success", async () => {
+    const write = deferred<void>();
+    fileSystemMocks.writeTextFile.mockReturnValueOnce(write.promise);
+    render(<App />);
+    const editor = await openDocument("C:\\notes\\draft.md", "draft");
+    const saveAsButton = screen.getByRole("button", { name: "Save As" });
+    expect(saveAsButton).toBeEnabled();
+
+    fireEvent.change(editor, { target: { value: "copy contents" } });
+    dialogMocks.save.mockResolvedValueOnce("C:\\copies\\copy.md");
+    fireEvent.click(saveAsButton);
+
+    await waitFor(() =>
+      expect(fileSystemMocks.writeTextFile).toHaveBeenCalledWith(
+        "C:\\copies\\copy.md",
+        "copy contents",
+      ),
+    );
+    expect(saveAsButton).toBeDisabled();
+    expect(screen.getByText("draft.md")).toHaveAttribute(
+      "title",
+      "C:\\notes\\draft.md",
+    );
+    expect(screen.getByText("Unsaved")).toBeInTheDocument();
+
+    write.resolve();
+
+    await waitFor(() =>
+      expect(screen.getByText("copy.md")).toHaveAttribute(
+        "title",
+        "C:\\copies\\copy.md",
+      ),
+    );
+    expect(screen.queryByText("Unsaved")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+    expect(dialogMocks.save).toHaveBeenCalledWith({
+      defaultPath: "C:\\notes\\draft.md",
+      filters: [{ extensions: ["md"], name: "Markdown" }],
+      title: "Save Markdown document as",
+    });
+  });
+
+  it("captures Save As after destination selection and preserves later edits", async () => {
+    const selection = deferred<string | null>();
+    const write = deferred<void>();
+    dialogMocks.save.mockReturnValueOnce(selection.promise);
+    fileSystemMocks.writeTextFile.mockReturnValueOnce(write.promise);
+    render(<App />);
+    const editor = await openDocument("C:\\notes\\draft.md", "A");
+    fireEvent.change(editor, { target: { value: "B" } });
+
+    fireEvent.click(screen.getByRole("button", { name: "Save As" }));
+    await waitFor(() => expect(dialogMocks.save).toHaveBeenCalled());
+    expect(editor).toBeEnabled();
+    fireEvent.change(editor, { target: { value: "C" } });
+    selection.resolve("C:\\copies\\copy.md");
+
+    await waitFor(() =>
+      expect(fileSystemMocks.writeTextFile).toHaveBeenCalledWith(
+        "C:\\copies\\copy.md",
+        "C",
+      ),
+    );
+    fireEvent.change(editor, { target: { value: "D" } });
+    write.resolve();
+
+    await waitFor(() => expect(screen.getByText("copy.md")).toBeInTheDocument());
+    expect(editor).toHaveValue("D");
+    expect(screen.getByText("Unsaved")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
+  });
+
+  it("leaves the complete active state unchanged when Save As is canceled", async () => {
+    render(<App />);
+    const editor = await openDocument("C:\\notes\\keep.md", "# Original");
+    fireEvent.change(editor, { target: { value: "# Changed" } });
+    fireEvent.click(screen.getByRole("button", { name: "Split" }));
+    const findInput = openFindAndReplace();
+    fireEvent.change(findInput, { target: { value: "Changed" } });
+    fileSystemMocks.writeTextFile.mockRejectedValueOnce(new Error("save failed"));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("save failed");
+
+    dialogMocks.save.mockResolvedValueOnce(null);
+    fireEvent.click(screen.getByRole("button", { name: "Save As" }));
+    await waitFor(() => expect(dialogMocks.save).toHaveBeenCalled());
+
+    expect(editor).toHaveValue("# Changed");
+    expect(screen.getByText("keep.md")).toHaveAttribute(
+      "title",
+      "C:\\notes\\keep.md",
+    );
+    expect(screen.getByText("Unsaved")).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "Find" })).toHaveValue("Changed");
+    expect(screen.getByRole("button", { name: "Split" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    expect(screen.getByRole("region", { name: "Markdown preview" })).toHaveTextContent(
+      "Changed",
+    );
+    expect(screen.getByRole("alert")).toHaveTextContent("save failed");
+  });
+
+  it("keeps the original document after Save As path or write failures", async () => {
+    render(<App />);
+    const editor = await openDocument("C:\\notes\\safe.md", "original");
+    fireEvent.change(editor, { target: { value: "important" } });
+
+    dialogMocks.save.mockResolvedValueOnce("C:\\copies\\bad-name.md");
+    pathMocks.basename.mockRejectedValueOnce(new Error("invalid basename"));
+    fireEvent.click(screen.getByRole("button", { name: "Save As" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Could not save the document as: invalid basename",
+    );
+    expect(fileSystemMocks.writeTextFile).not.toHaveBeenCalled();
+
+    dialogMocks.save.mockResolvedValueOnce("C:\\copies\\unwritable.md");
+    fileSystemMocks.writeTextFile.mockRejectedValueOnce(new Error("access denied"));
+    fireEvent.click(screen.getByRole("button", { name: "Save As" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Could not save the document as: access denied",
+    );
+
+    expect(editor).toHaveValue("important");
+    expect(screen.getByText("safe.md")).toHaveAttribute(
+      "title",
+      "C:\\notes\\safe.md",
+    );
+    expect(screen.getByText("Unsaved")).toBeInTheDocument();
+  });
+
+  it("allows Save As to select the current active path", async () => {
+    render(<App />);
+    const editor = await openDocument("C:\\notes\\same.md", "original");
+    fireEvent.change(editor, { target: { value: "updated" } });
+    dialogMocks.save.mockResolvedValueOnce("C:\\notes\\same.md");
+
+    fireEvent.click(screen.getByRole("button", { name: "Save As" }));
+
+    await waitFor(() =>
+      expect(fileSystemMocks.writeTextFile).toHaveBeenCalledWith(
+        "C:\\notes\\same.md",
+        "updated",
+      ),
+    );
+    expect(screen.getByText("same.md")).toHaveAttribute(
+      "title",
+      "C:\\notes\\same.md",
+    );
+    expect(screen.queryByText("Unsaved")).not.toBeInTheDocument();
+  });
+
+  it("runs Ctrl and Meta file shortcuts from document and Find controls", async () => {
+    render(<App />);
+
+    const newEvent = new KeyboardEvent("keydown", {
+      bubbles: true,
+      cancelable: true,
+      ctrlKey: true,
+      key: "N",
+    });
+    fireEvent(window, newEvent);
+    expect(newEvent.defaultPrevented).toBe(true);
+    await waitFor(() => expect(dialogMocks.save).toHaveBeenCalledOnce());
+
+    const openEvent = new KeyboardEvent("keydown", {
+      bubbles: true,
+      cancelable: true,
+      key: "o",
+      metaKey: true,
+    });
+    fireEvent(window, openEvent);
+    expect(openEvent.defaultPrevented).toBe(true);
+    await waitFor(() => expect(dialogMocks.open).toHaveBeenCalledOnce());
+
+    const editor = await openDocument("C:\\notes\\keys.md", "old");
+    fireEvent.change(editor, { target: { value: "new" } });
+    editor.focus();
+    const saveEvent = new KeyboardEvent("keydown", {
+      bubbles: true,
+      cancelable: true,
+      ctrlKey: true,
+      key: "s",
+    });
+    fireEvent(editor, saveEvent);
+    expect(saveEvent.defaultPrevented).toBe(true);
+    await waitFor(() =>
+      expect(fileSystemMocks.writeTextFile).toHaveBeenCalledWith(
+        "C:\\notes\\keys.md",
+        "new",
+      ),
+    );
+
+    fireEvent.change(editor, { target: { value: "newer" } });
+    const findInput = openFindAndReplace();
+    findInput.focus();
+    const openFromFindEvent = new KeyboardEvent("keydown", {
+      bubbles: true,
+      cancelable: true,
+      key: "O",
+      metaKey: true,
+    });
+    fireEvent(findInput, openFromFindEvent);
+    expect(openFromFindEvent.defaultPrevented).toBe(true);
+    await waitFor(() => expect(dialogMocks.open).toHaveBeenCalledTimes(3));
+    expect(findInput).toHaveFocus();
+
+    const replaceInput = screen.getByRole("textbox", { name: "Replace with" });
+    replaceInput.focus();
+    dialogMocks.save.mockResolvedValueOnce(null);
+    const saveAsEvent = new KeyboardEvent("keydown", {
+      bubbles: true,
+      cancelable: true,
+      key: "S",
+      metaKey: true,
+      shiftKey: true,
+    });
+    fireEvent(replaceInput, saveAsEvent);
+    expect(saveAsEvent.defaultPrevented).toBe(true);
+    await waitFor(() => expect(dialogMocks.save).toHaveBeenCalledTimes(2));
+    expect(replaceInput).toHaveFocus();
+  });
+
+  it("prevents recognized shortcut defaults without running guarded operations", async () => {
+    const selection = deferred<string | null>();
+    dialogMocks.open.mockReturnValueOnce(selection.promise);
+    render(<App />);
+
+    for (const options of [
+      { key: "s", ctrlKey: true },
+      { key: "s", ctrlKey: true, shiftKey: true },
+    ]) {
+      const unavailableEvent = new KeyboardEvent("keydown", {
+        bubbles: true,
+        cancelable: true,
+        ...options,
+      });
+      fireEvent(window, unavailableEvent);
+      expect(unavailableEvent.defaultPrevented).toBe(true);
+    }
+    expect(fileSystemMocks.writeTextFile).not.toHaveBeenCalled();
+    expect(dialogMocks.save).not.toHaveBeenCalled();
+
+    const repeatedEvent = new KeyboardEvent("keydown", {
+      bubbles: true,
+      cancelable: true,
+      ctrlKey: true,
+      key: "o",
+      repeat: true,
+    });
+    fireEvent(window, repeatedEvent);
+    expect(repeatedEvent.defaultPrevented).toBe(true);
+    expect(dialogMocks.open).not.toHaveBeenCalled();
+
+    const openEvent = new KeyboardEvent("keydown", {
+      bubbles: true,
+      cancelable: true,
+      ctrlKey: true,
+      key: "o",
+    });
+    fireEvent(window, openEvent);
+    await waitFor(() => expect(dialogMocks.open).toHaveBeenCalledOnce());
+
+    const pendingNewEvent = new KeyboardEvent("keydown", {
+      bubbles: true,
+      cancelable: true,
+      ctrlKey: true,
+      key: "n",
+    });
+    fireEvent(window, pendingNewEvent);
+    expect(pendingNewEvent.defaultPrevented).toBe(true);
+    expect(dialogMocks.save).not.toHaveBeenCalled();
+
+    for (const options of [
+      { altKey: true, ctrlKey: true, key: "s" },
+      { key: "s" },
+      { ctrlKey: true, key: "f" },
+    ]) {
+      const ignoredEvent = new KeyboardEvent("keydown", {
+        bubbles: true,
+        cancelable: true,
+        ...options,
+      });
+      fireEvent(window, ignoredEvent);
+      expect(ignoredEvent.defaultPrevented).toBe(false);
+    }
+
+    selection.resolve(null);
   });
 
   it("keeps edits made during a save dirty after the captured buffer is written", async () => {
