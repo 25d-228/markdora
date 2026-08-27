@@ -29,6 +29,8 @@ type MatchRange = {
   start: number;
 };
 
+type ShortcutAction = "new" | "open" | "save" | "saveAs";
+
 const markdownFilter = [{ name: "Markdown", extensions: ["md"] }];
 
 const discardDialogOptions = {
@@ -91,9 +93,18 @@ function App() {
   const [matchPosition, setMatchPosition] = useState<number | null>(null);
   const [selectionRequest, setSelectionRequest] = useState(0);
   const operationPendingRef = useRef(false);
+  const documentRef = useRef<DocumentState | null>(document);
   const editorRef = useRef<HTMLTextAreaElement>(null);
   const findInputRef = useRef<HTMLInputElement>(null);
   const focusEditorForSelectionRef = useRef(false);
+  const shortcutActionsRef = useRef<
+    Record<ShortcutAction, () => void | Promise<void>>
+  >({
+    new: () => undefined,
+    open: () => undefined,
+    save: () => undefined,
+    saveAs: () => undefined,
+  });
   const dirty = document !== null && document.content !== document.persistedContent;
   const dirtyRef = useRef(dirty);
   const matches =
@@ -113,6 +124,10 @@ function App() {
   useEffect(() => {
     dirtyRef.current = dirty;
   }, [dirty]);
+
+  useEffect(() => {
+    documentRef.current = document;
+  }, [document]);
 
   useEffect(() => {
     if (findOpen) {
@@ -444,6 +459,92 @@ function App() {
     }
   }
 
+  async function handleSaveAs() {
+    if (!document || !beginOperation()) {
+      return;
+    }
+
+    try {
+      const selectedPath = await save({
+        title: "Save Markdown document as",
+        defaultPath: document.path,
+        filters: markdownFilter,
+      });
+
+      if (selectedPath === null) {
+        return;
+      }
+
+      const currentDocument = documentRef.current;
+      if (!currentDocument) {
+        return;
+      }
+
+      const sourcePath = currentDocument.path;
+      const content = currentDocument.content;
+      const name = await basename(selectedPath);
+      await writeTextFile(selectedPath, content);
+      setDocument((latestDocument) => {
+        if (!latestDocument || latestDocument.path !== sourcePath) {
+          return latestDocument;
+        }
+
+        return {
+          ...latestDocument,
+          name,
+          path: selectedPath,
+          persistedContent: content,
+        };
+      });
+      setDocumentError(null);
+    } catch (operationError) {
+      setDocumentError(
+        `Could not save the document as: ${describeError(operationError)}`,
+      );
+    } finally {
+      finishOperation();
+    }
+  }
+
+  useEffect(() => {
+    shortcutActionsRef.current = {
+      new: handleNew,
+      open: handleOpen,
+      save: handleSave,
+      saveAs: handleSaveAs,
+    };
+  });
+
+  useEffect(() => {
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.altKey || (!event.ctrlKey && !event.metaKey)) {
+        return;
+      }
+
+      const key = event.key.toLowerCase();
+      let action: ShortcutAction | null = null;
+      if (!event.shiftKey && key === "n") {
+        action = "new";
+      } else if (!event.shiftKey && key === "o") {
+        action = "open";
+      } else if (key === "s") {
+        action = event.shiftKey ? "saveAs" : "save";
+      }
+
+      if (!action) {
+        return;
+      }
+
+      event.preventDefault();
+      if (!event.repeat) {
+        void shortcutActionsRef.current[action]();
+      }
+    }
+
+    globalThis.addEventListener("keydown", handleKeyDown);
+    return () => globalThis.removeEventListener("keydown", handleKeyDown);
+  }, []);
+
   useEffect(() => {
     let disposed = false;
     let removeCloseListener: (() => void) | undefined;
@@ -562,6 +663,11 @@ function App() {
             >
               Save
             </Button>
+            {document ? (
+              <Button disabled={operationPending} onClick={handleSaveAs}>
+                Save As
+              </Button>
+            ) : null}
           </nav>
         </div>
       </header>
