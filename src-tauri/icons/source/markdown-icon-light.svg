@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 340 340" width="340" height="340">
+  <title>markdown-icon-light</title>
+
+  <!-- 1. canvas -->
+  <rect width="340" height="340" rx="16" ry="16" fill="#E9D7C2"/>
+
+  <!-- 2. glyph: hash mark — four ruled strokes -->
+  <g transform="translate(0, 0)"
+     fill="none" stroke="#3D3D3D" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M 138 90 V 250" stroke-width="25"/>
+    <path d="M 202 90 V 250" stroke-width="25"/>
+    <path d="M 90 138 H 250" stroke-width="25"/>
+    <path d="M 90 202 H 250" stroke-width="25"/>
+  </g>
+
+  <!-- 3. mascot: same place in every icon, never moved or resized -->
+  <g transform="translate(190, 180)" shape-rendering="crispEdges">
+    <rect x="0"   y="0"  width="30"  height="30" fill="#1A1A1A"/>
+    <rect x="90"  y="0"  width="30"  height="30" fill="#1A1A1A"/>
+    <rect x="15"  y="15" width="15"  height="15" fill="#F5A5B8"/>
+    <rect x="90"  y="15" width="15"  height="15" fill="#F5A5B8"/>
+    <rect x="0"   y="30" width="120" height="30" fill="#1A1A1A"/>
+    <rect x="30"  y="45" width="15"  height="15" fill="#FFFFFF"/>
+    <rect x="75"  y="45" width="15"  height="15" fill="#FFFFFF"/>
+    <rect x="0"   y="60" width="120" height="30" fill="#FFFFFF"/>
+    <rect x="0"   y="60" width="15"  height="15" fill="#1A1A1A"/>
+    <rect x="105" y="60" width="15"  height="15" fill="#1A1A1A"/>
+    <rect x="30"  y="60" width="15"  height="15" fill="#0A0A0A"/>
+    <rect x="75"  y="60" width="15"  height="15" fill="#0A0A0A"/>
+    <rect x="30"  y="90" width="60"  height="30" fill="#FFFFFF"/>
+    <rect x="15"  y="90" width="15"  height="15" fill="#1A1A1A"/>
+    <rect x="90"  y="90" width="15"  height="15" fill="#1A1A1A"/>
+    <rect x="52"  y="96" width="16"  height="10" fill="#0A0A0A"/>
+  </g>
+</svg>
