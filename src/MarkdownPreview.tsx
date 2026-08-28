@@ -4,6 +4,7 @@ import {
   createContext,
   type KeyboardEvent,
   type MouseEvent,
+  type Ref,
   type ReactNode,
   useContext,
   useEffect,
@@ -17,6 +18,8 @@ type MarkdownPreviewProps = {
   documentPath: string;
   onExternalLinkError: (error: unknown) => void;
   onExternalLinkSuccess: () => void;
+  onScroll: () => void;
+  previewRef: Ref<HTMLElement>;
 };
 
 type LocalImageProps = {
@@ -226,11 +229,15 @@ function MarkdownPreview({
   documentPath,
   onExternalLinkError,
   onExternalLinkSuccess,
+  onScroll,
+  previewRef,
 }: MarkdownPreviewProps) {
   return (
     <section
       aria-label="Markdown preview"
       className="markdown-preview min-h-0 min-w-0 overflow-auto rounded-md border bg-background p-5"
+      onScroll={onScroll}
+      ref={previewRef}
     >
       <PreviewContext.Provider
         value={{ documentPath, onExternalLinkError, onExternalLinkSuccess }}

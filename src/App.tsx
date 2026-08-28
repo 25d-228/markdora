@@ -2,7 +2,7 @@ import { basename } from "@tauri-apps/api/path";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { confirm, open, save } from "@tauri-apps/plugin-dialog";
 import { readTextFile, writeTextFile } from "@tauri-apps/plugin-fs";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -30,6 +30,10 @@ type MatchRange = {
 };
 
 type ShortcutAction = "new" | "open" | "save" | "saveAs";
+
+type ScrollPane = "preview" | "source";
+
+type PendingScrollOffsets = Record<ScrollPane, number | null>;
 
 const markdownFilter = [{ name: "Markdown", extensions: ["md"] }];
 
@@ -78,6 +82,50 @@ function findMatchAtOrAfter(matches: MatchRange[], position: number) {
   return matches.find((match) => match.start >= position) ?? matches[0] ?? null;
 }
 
+function scrollDistance(element: HTMLElement) {
+  return Math.max(0, element.scrollHeight - element.clientHeight);
+}
+
+function clampScrollOffset(offset: number, maximum: number) {
+  if (!Number.isFinite(offset)) {
+    return 0;
+  }
+
+  return Math.min(maximum, Math.max(0, offset));
+}
+
+function scrollProgress(element: HTMLElement) {
+  const distance = scrollDistance(element);
+  if (distance === 0) {
+    return 0;
+  }
+
+  return clampScrollOffset(element.scrollTop, distance) / distance;
+}
+
+function synchronizeScroll(
+  driverPane: ScrollPane,
+  source: HTMLTextAreaElement,
+  preview: HTMLElement,
+  pendingOffsets: PendingScrollOffsets,
+) {
+  const driver = driverPane === "source" ? source : preview;
+  const targetPane: ScrollPane = driverPane === "source" ? "preview" : "source";
+  const target = targetPane === "source" ? source : preview;
+  const targetDistance = scrollDistance(target);
+  const targetOffset = clampScrollOffset(
+    scrollProgress(driver) * targetDistance,
+    targetDistance,
+  );
+
+  if (target.scrollTop === targetOffset) {
+    return;
+  }
+
+  pendingOffsets[targetPane] = targetOffset;
+  target.scrollTop = targetOffset;
+}
+
 function App() {
   const [document, setDocument] = useState<DocumentState | null>(null);
   const [documentError, setDocumentError] = useState<string | null>(null);
@@ -95,8 +143,14 @@ function App() {
   const operationPendingRef = useRef(false);
   const documentRef = useRef<DocumentState | null>(document);
   const editorRef = useRef<HTMLTextAreaElement>(null);
+  const previewRef = useRef<HTMLElement>(null);
   const findInputRef = useRef<HTMLInputElement>(null);
   const focusEditorForSelectionRef = useRef(false);
+  const mostRecentScrollDriverRef = useRef<ScrollPane | null>(null);
+  const pendingScrollOffsetsRef = useRef<PendingScrollOffsets>({
+    preview: null,
+    source: null,
+  });
   const shortcutActionsRef = useRef<
     Record<ShortcutAction, () => void | Promise<void>>
   >({
@@ -128,6 +182,23 @@ function App() {
   useEffect(() => {
     documentRef.current = document;
   }, [document]);
+
+  useLayoutEffect(() => {
+    if (viewMode !== "split" || !mostRecentScrollDriverRef.current) {
+      return;
+    }
+
+    const source = editorRef.current;
+    const preview = previewRef.current;
+    if (source && preview) {
+      synchronizeScroll(
+        mostRecentScrollDriverRef.current,
+        source,
+        preview,
+        pendingScrollOffsetsRef.current,
+      );
+    }
+  }, [documentContent, viewMode]);
 
   useEffect(() => {
     if (findOpen) {
@@ -197,7 +268,42 @@ function App() {
     if (mode === "preview") {
       resetFindAndReplace();
     }
+    if (mode !== viewMode) {
+      if (mode === "split") {
+        mostRecentScrollDriverRef.current =
+          viewMode === "preview" ? "preview" : "source";
+      }
+      pendingScrollOffsetsRef.current.preview = null;
+      pendingScrollOffsetsRef.current.source = null;
+    }
     setViewMode(mode);
+  }
+
+  function handlePaneScroll(pane: ScrollPane) {
+    if (viewMode !== "split") {
+      return;
+    }
+
+    const source = editorRef.current;
+    const preview = previewRef.current;
+    if (!source || !preview) {
+      return;
+    }
+
+    const element = pane === "source" ? source : preview;
+    const expectedOffset = pendingScrollOffsetsRef.current[pane];
+    pendingScrollOffsetsRef.current[pane] = null;
+    if (expectedOffset !== null && element.scrollTop === expectedOffset) {
+      return;
+    }
+
+    mostRecentScrollDriverRef.current = pane;
+    synchronizeScroll(
+      pane,
+      source,
+      preview,
+      pendingScrollOffsetsRef.current,
+    );
   }
 
   function handleOpenFind() {
@@ -782,6 +888,7 @@ function App() {
                     event.target.selectionStart,
                   );
                 }}
+                onScroll={() => handlePaneScroll("source")}
                 ref={editorRef}
                 spellCheck={false}
                 value={document.content}
@@ -797,6 +904,8 @@ function App() {
                   )
                 }
                 onExternalLinkSuccess={() => setExternalLinkError(null)}
+                onScroll={() => handlePaneScroll("preview")}
+                previewRef={previewRef}
               />
             ) : null}
           </>

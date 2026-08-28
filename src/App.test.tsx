@@ -80,6 +80,21 @@ function openFindAndReplace() {
   return screen.getByRole("textbox", { name: "Find" });
 }
 
+function setScrollMetrics(
+  element: HTMLElement,
+  {
+    clientHeight,
+    scrollHeight,
+    scrollTop = 0,
+  }: { clientHeight: number; scrollHeight: number; scrollTop?: number },
+) {
+  Object.defineProperties(element, {
+    clientHeight: { configurable: true, value: clientHeight },
+    scrollHeight: { configurable: true, value: scrollHeight },
+  });
+  element.scrollTop = scrollTop;
+}
+
 describe("single-document workflow", () => {
   beforeEach(() => {
     closeHandler = undefined;
@@ -207,6 +222,207 @@ describe("single-document workflow", () => {
     );
     expect(screen.getByRole("region", { name: "Markdown preview" })).toBeInTheDocument();
     expect(screen.getByText("Unsaved")).toBeInTheDocument();
+  });
+
+  it("maps source top, middle, and bottom to preview scroll progress", async () => {
+    render(<App />);
+    const editor = await openDocument("C:\\notes\\scroll.md", "content");
+    fireEvent.click(screen.getByRole("button", { name: "Split" }));
+    const preview = screen.getByRole("region", { name: "Markdown preview" });
+    setScrollMetrics(editor, { clientHeight: 200, scrollHeight: 1000 });
+    setScrollMetrics(preview, { clientHeight: 100, scrollHeight: 400 });
+
+    for (const [sourceOffset, previewOffset] of [
+      [0, 0],
+      [400, 150],
+      [800, 300],
+    ]) {
+      editor.scrollTop = sourceOffset;
+      fireEvent.scroll(editor);
+      expect(preview.scrollTop).toBe(previewOffset);
+    }
+  });
+
+  it("maps preview top, middle, and bottom to source scroll progress", async () => {
+    render(<App />);
+    const editor = await openDocument("C:\\notes\\scroll.md", "content");
+    fireEvent.click(screen.getByRole("button", { name: "Split" }));
+    const preview = screen.getByRole("region", { name: "Markdown preview" });
+    setScrollMetrics(editor, { clientHeight: 200, scrollHeight: 1000 });
+    setScrollMetrics(preview, { clientHeight: 100, scrollHeight: 400 });
+
+    for (const [previewOffset, sourceOffset] of [
+      [0, 0],
+      [75, 200],
+      [300, 800],
+    ]) {
+      preview.scrollTop = previewOffset;
+      fireEvent.scroll(preview);
+      expect(editor.scrollTop).toBe(sourceOffset);
+    }
+  });
+
+  it("suppresses synchronized feedback and immediately accepts the opposite driver", async () => {
+    render(<App />);
+    const editor = await openDocument("C:\\notes\\scroll.md", "content");
+    fireEvent.click(screen.getByRole("button", { name: "Split" }));
+    const preview = screen.getByRole("region", { name: "Markdown preview" });
+    setScrollMetrics(editor, { clientHeight: 200, scrollHeight: 1000 });
+    setScrollMetrics(preview, { clientHeight: 100, scrollHeight: 400 });
+
+    editor.scrollTop = 400;
+    fireEvent.scroll(editor);
+    expect(preview.scrollTop).toBe(150);
+
+    preview.scrollTop = 225;
+    fireEvent.scroll(preview);
+    expect(editor.scrollTop).toBe(600);
+
+    fireEvent.scroll(editor);
+    expect(preview.scrollTop).toBe(225);
+
+    editor.scrollTop = 200;
+    fireEvent.scroll(editor);
+    expect(preview.scrollTop).toBe(75);
+
+    fireEvent.scroll(preview);
+    expect(editor.scrollTop).toBe(200);
+  });
+
+  it("handles a pane with no scrollable distance without invalid offsets", async () => {
+    render(<App />);
+    const editor = await openDocument("C:\\notes\\scroll.md", "content");
+    fireEvent.click(screen.getByRole("button", { name: "Split" }));
+    const preview = screen.getByRole("region", { name: "Markdown preview" });
+    setScrollMetrics(editor, { clientHeight: 200, scrollHeight: 200 });
+    setScrollMetrics(preview, {
+      clientHeight: 100,
+      scrollHeight: 400,
+      scrollTop: 150,
+    });
+
+    fireEvent.scroll(editor);
+    expect(preview.scrollTop).toBe(0);
+    expect(Number.isFinite(preview.scrollTop)).toBe(true);
+
+    setScrollMetrics(editor, {
+      clientHeight: 200,
+      scrollHeight: 1000,
+      scrollTop: 400,
+    });
+    setScrollMetrics(preview, { clientHeight: 100, scrollHeight: 100 });
+    fireEvent.scroll(editor);
+    expect(preview.scrollTop).toBe(0);
+    expect(Number.isFinite(preview.scrollTop)).toBe(true);
+  });
+
+  it("restores the non-driving pane after live content changes its height", async () => {
+    render(<App />);
+    const editor = await openDocument("C:\\notes\\scroll.md", "content");
+    fireEvent.click(screen.getByRole("button", { name: "Split" }));
+    const preview = screen.getByRole("region", { name: "Markdown preview" });
+    setScrollMetrics(editor, {
+      clientHeight: 200,
+      scrollHeight: 1000,
+      scrollTop: 400,
+    });
+    setScrollMetrics(preview, { clientHeight: 100, scrollHeight: 400 });
+    fireEvent.scroll(editor);
+    expect(preview.scrollTop).toBe(150);
+    fireEvent.scroll(editor);
+    fireEvent.scroll(preview);
+
+    setScrollMetrics(preview, {
+      clientHeight: 100,
+      scrollHeight: 700,
+      scrollTop: 150,
+    });
+    fireEvent.change(editor, { target: { value: "content\nmore content" } });
+
+    expect(editor.scrollTop).toBe(400);
+    expect(preview.scrollTop).toBe(300);
+    expect(screen.getByRole("region", { name: "Markdown preview" })).toHaveTextContent(
+      "more content",
+    );
+  });
+
+  it("keeps a preview-driven offset while live content changes source height", async () => {
+    render(<App />);
+    const editor = await openDocument("C:\\notes\\scroll.md", "content");
+    fireEvent.click(screen.getByRole("button", { name: "Split" }));
+    const preview = screen.getByRole("region", { name: "Markdown preview" });
+    setScrollMetrics(editor, { clientHeight: 200, scrollHeight: 1000 });
+    setScrollMetrics(preview, {
+      clientHeight: 100,
+      scrollHeight: 400,
+      scrollTop: 225,
+    });
+    fireEvent.scroll(preview);
+    expect(editor.scrollTop).toBe(600);
+    fireEvent.click(screen.getByRole("button", { name: "Split" }));
+
+    setScrollMetrics(editor, {
+      clientHeight: 200,
+      scrollHeight: 1400,
+      scrollTop: 600,
+    });
+    fireEvent.change(editor, { target: { value: "content\nmore content" } });
+
+    expect(preview.scrollTop).toBe(225);
+    expect(editor.scrollTop).toBe(900);
+  });
+
+  it("uses the pane that remains mounted when returning to Split", async () => {
+    render(<App />);
+    const editor = await openDocument("C:\\notes\\scroll.md", "content");
+    setScrollMetrics(editor, {
+      clientHeight: 200,
+      scrollHeight: 1000,
+      scrollTop: 600,
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Split" }));
+    let preview = screen.getByRole("region", { name: "Markdown preview" });
+    setScrollMetrics(preview, { clientHeight: 100, scrollHeight: 400 });
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    fireEvent.click(screen.getByRole("button", { name: "Split" }));
+    preview = screen.getByRole("region", { name: "Markdown preview" });
+    setScrollMetrics(preview, { clientHeight: 100, scrollHeight: 400 });
+    fireEvent.change(editor, { target: { value: "content changed" } });
+    expect(preview.scrollTop).toBe(225);
+
+    preview.scrollTop = 75;
+    fireEvent.click(screen.getByRole("button", { name: "Preview" }));
+    fireEvent.click(screen.getByRole("button", { name: "Split" }));
+    const remountedEditor = screen.getByRole("textbox", {
+      name: "Markdown source",
+    });
+    setScrollMetrics(remountedEditor, { clientHeight: 200, scrollHeight: 1000 });
+    fireEvent.change(remountedEditor, { target: { value: "content changed again" } });
+    expect(remountedEditor.scrollTop).toBe(200);
+  });
+
+  it("does not synchronize when Split mode is inactive", async () => {
+    render(<App />);
+    const editor = await openDocument("C:\\notes\\scroll.md", "content");
+    setScrollMetrics(editor, {
+      clientHeight: 200,
+      scrollHeight: 1000,
+      scrollTop: 400,
+    });
+    fireEvent.scroll(editor);
+
+    fireEvent.click(screen.getByRole("button", { name: "Split" }));
+    const preview = screen.getByRole("region", { name: "Markdown preview" });
+    setScrollMetrics(preview, {
+      clientHeight: 100,
+      scrollHeight: 400,
+      scrollTop: 150,
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Preview" }));
+
+    preview.scrollTop = 300;
+    fireEvent.scroll(preview);
+    expect(editor.scrollTop).toBe(400);
   });
 
   it("opens Find for an active document and returns focus to the editor when closed", async () => {
