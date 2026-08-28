@@ -245,6 +245,21 @@
     text-underline-offset: 0.2em;
   }
 
+  .markdown-preview mark.preview-find-match {
+    border-radius: 0.125rem;
+    background: color-mix(
+      in oklch,
+      var(--foreground) 20%,
+      var(--background)
+    );
+    color: inherit;
+  }
+
+  .markdown-preview mark.preview-find-match-active {
+    outline: 2px solid var(--foreground);
+    outline-offset: 1px;
+  }
+
   .markdown-preview img {
     display: block;
     max-width: 100%;
