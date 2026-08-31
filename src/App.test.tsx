@@ -603,6 +603,53 @@ describe("single-document workflow", () => {
     );
   });
 
+  it("preserves a highlighted reference link while hiding its destination match", async () => {
+    const content = [
+      "[Needle link][reference]",
+      "",
+      "[reference]: https://example.com/needle-hidden",
+    ].join("\n");
+    render(<App />);
+    await openDocument("C:\\notes\\hidden.md", content);
+    fireEvent.click(screen.getByRole("button", { name: "Preview" }));
+    expect(
+      within(
+        screen.getByRole("region", { name: "Markdown preview" }),
+      ).getByRole("link", { name: "Needle link" }),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Split" }));
+    const editor = screen.getByRole("textbox", {
+      name: "Markdown source",
+    }) as HTMLTextAreaElement;
+    const preview = screen.getByRole("region", { name: "Markdown preview" });
+    const link = within(preview).getByRole("link", { name: "Needle link" });
+    expect(link).toHaveTextContent("Needle link");
+
+    const findInput = openFindAndReplace();
+    fireEvent.change(findInput, { target: { value: "needle" } });
+
+    expect(screen.getByRole("status")).toHaveTextContent("1 of 2");
+    expect(preview.querySelectorAll("mark")).toHaveLength(1);
+    expect(preview.querySelector('mark[aria-current="true"]')).toHaveAttribute(
+      "data-source-start",
+      String(content.indexOf("Needle")),
+    );
+    expect(link).toContainElement(preview.querySelector("mark"));
+
+    fireEvent.click(link);
+    await waitFor(() =>
+      expect(openerMocks.openUrl).toHaveBeenCalledWith(
+        "https://example.com/needle-hidden",
+      ),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Next match" }));
+    expect(screen.getByRole("status")).toHaveTextContent("2 of 2");
+    expect(preview.querySelector('mark[aria-current="true"]')).toBeNull();
+    expect(editor.selectionStart).toBe(content.indexOf("needle"));
+  });
+
   it("does not let hidden source matches misalign visible preview marks", async () => {
     const content = [
       "[Find label][ref]",
