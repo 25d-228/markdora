@@ -95,6 +95,19 @@ function setScrollMetrics(
   element.scrollTop = scrollTop;
 }
 
+function dispatchKeyDown(
+  target: Document | Element | Node | Window,
+  options: KeyboardEventInit,
+) {
+  const event = new KeyboardEvent("keydown", {
+    bubbles: true,
+    cancelable: true,
+    ...options,
+  });
+  fireEvent(target, event);
+  return event;
+}
+
 describe("single-document workflow", () => {
   beforeEach(() => {
     closeHandler = undefined;
@@ -469,6 +482,326 @@ describe("single-document workflow", () => {
     expect(
       screen.queryByRole("region", { name: "Find and replace" }),
     ).not.toBeInTheDocument();
+  });
+
+  it("owns Ctrl and Meta Find shortcuts across Edit, Split, and Preview", async () => {
+    render(<App />);
+    await openDocument("C:\\notes\\shortcut.md", "Find one and Find two");
+
+    const editEvent = dispatchKeyDown(window, { ctrlKey: true, key: "F" });
+    expect(editEvent.defaultPrevented).toBe(true);
+    const findInput = screen.getByRole("textbox", { name: "Find" });
+    expect(findInput).toHaveFocus();
+    fireEvent.change(findInput, { target: { value: "Find" } });
+    fireEvent.change(screen.getByRole("textbox", { name: "Replace with" }), {
+      target: { value: "Keep" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Next match" }));
+    expect(screen.getByRole("status")).toHaveTextContent("2 of 2");
+
+    const existingEvent = dispatchKeyDown(window, { key: "f", metaKey: true });
+    expect(existingEvent.defaultPrevented).toBe(true);
+    expect(findInput).toHaveFocus();
+    expect(findInput).toHaveValue("Find");
+    expect(screen.getByRole("textbox", { name: "Replace with" })).toHaveValue(
+      "Keep",
+    );
+    expect(screen.getByRole("status")).toHaveTextContent("2 of 2");
+
+    fireEvent.click(screen.getByRole("button", { name: "Split" }));
+    const splitEvent = dispatchKeyDown(window, { ctrlKey: true, key: "f" });
+    expect(splitEvent.defaultPrevented).toBe(true);
+    expect(screen.getByRole("button", { name: "Split" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    expect(findInput).toHaveFocus();
+
+    fireEvent.click(screen.getByRole("button", { name: "Preview" }));
+    const previewEvent = dispatchKeyDown(window, { key: "F", metaKey: true });
+    expect(previewEvent.defaultPrevented).toBe(true);
+    expect(screen.getByRole("button", { name: "Edit" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    expect(screen.getByRole("textbox", { name: "Find" })).toHaveFocus();
+  });
+
+  it("prevents only recognized Find shortcut defaults and respects guards", async () => {
+    render(<App />);
+
+    for (const options of [
+      { ctrlKey: true, key: "f" },
+      { key: "F", metaKey: true, repeat: true },
+    ]) {
+      expect(dispatchKeyDown(window, options).defaultPrevented).toBe(true);
+    }
+    expect(
+      screen.queryByRole("region", { name: "Find and replace" }),
+    ).not.toBeInTheDocument();
+
+    for (const options of [
+      { altKey: true, ctrlKey: true, key: "f" },
+      { ctrlKey: true, key: "f", shiftKey: true },
+      { key: "f" },
+      { ctrlKey: true, key: "g" },
+    ]) {
+      expect(dispatchKeyDown(window, options).defaultPrevented).toBe(false);
+    }
+
+    const editor = await openDocument("C:\\notes\\pending.md", "Find this");
+    const selection = deferred<string | null>();
+    dialogMocks.open.mockReturnValueOnce(selection.promise);
+    fireEvent.click(screen.getByRole("button", { name: "Open" }));
+    await waitFor(() => expect(editor).toBeDisabled());
+
+    const pendingEvent = dispatchKeyDown(window, { ctrlKey: true, key: "f" });
+    expect(pendingEvent.defaultPrevented).toBe(true);
+    expect(
+      screen.queryByRole("region", { name: "Find and replace" }),
+    ).not.toBeInTheDocument();
+    selection.resolve(null);
+    await waitFor(() => expect(editor).toBeEnabled());
+  });
+
+  it("highlights representative rendered matches from the source count", async () => {
+    const content = [
+      "# Find heading",
+      "",
+      "Find paragraph and **Find bold** and [Find label](https://example.com).",
+      "",
+      "`Find code`",
+      "",
+      "```txt",
+      "Find fenced",
+      "```",
+      "",
+      "- Find list",
+      "",
+      "> Find quote",
+      "",
+      "| Column |",
+      "| --- |",
+      "| Find table |",
+    ].join("\n");
+    render(<App />);
+    await openDocument("C:\\notes\\highlight.md", content);
+    fireEvent.click(screen.getByRole("button", { name: "Split" }));
+    const findInput = openFindAndReplace();
+    fireEvent.change(findInput, { target: { value: "find" } });
+
+    expect(screen.getByRole("status")).toHaveTextContent("1 of 9");
+    const preview = screen.getByRole("region", { name: "Markdown preview" });
+    const marks = within(preview).getAllByText("Find", { selector: "mark" });
+    expect(marks).toHaveLength(9);
+    expect(marks[0]).toHaveAttribute("aria-current", "true");
+    expect(preview.querySelectorAll('mark[aria-current="true"]')).toHaveLength(1);
+
+    fireEvent.click(within(preview).getByRole("link", { name: "Find label" }));
+    await waitFor(() =>
+      expect(openerMocks.openUrl).toHaveBeenCalledWith("https://example.com"),
+    );
+  });
+
+  it("preserves a highlighted reference link while hiding its destination match", async () => {
+    const content = [
+      "[Needle link][reference]",
+      "",
+      "[reference]: https://example.com/needle-hidden",
+    ].join("\n");
+    render(<App />);
+    await openDocument("C:\\notes\\hidden.md", content);
+    fireEvent.click(screen.getByRole("button", { name: "Preview" }));
+    expect(
+      within(
+        screen.getByRole("region", { name: "Markdown preview" }),
+      ).getByRole("link", { name: "Needle link" }),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Split" }));
+    const editor = screen.getByRole("textbox", {
+      name: "Markdown source",
+    }) as HTMLTextAreaElement;
+    const preview = screen.getByRole("region", { name: "Markdown preview" });
+    const link = within(preview).getByRole("link", { name: "Needle link" });
+    expect(link).toHaveTextContent("Needle link");
+
+    const findInput = openFindAndReplace();
+    fireEvent.change(findInput, { target: { value: "needle" } });
+
+    expect(screen.getByRole("status")).toHaveTextContent("1 of 2");
+    expect(preview.querySelectorAll("mark")).toHaveLength(1);
+    expect(preview.querySelector('mark[aria-current="true"]')).toHaveAttribute(
+      "data-source-start",
+      String(content.indexOf("Needle")),
+    );
+    expect(link).toContainElement(preview.querySelector("mark"));
+
+    fireEvent.click(link);
+    await waitFor(() =>
+      expect(openerMocks.openUrl).toHaveBeenCalledWith(
+        "https://example.com/needle-hidden",
+      ),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Next match" }));
+    expect(screen.getByRole("status")).toHaveTextContent("2 of 2");
+    expect(preview.querySelector('mark[aria-current="true"]')).toBeNull();
+    expect(editor.selectionStart).toBe(content.indexOf("needle"));
+  });
+
+  it("does not let hidden source matches misalign visible preview marks", async () => {
+    const content = [
+      "[Find label][ref]",
+      "",
+      "[ref]: https://example.com/find",
+      "",
+      "Find after",
+    ].join("\n");
+    render(<App />);
+    const editor = await openDocument("C:\\notes\\hidden.md", content);
+    fireEvent.click(screen.getByRole("button", { name: "Split" }));
+    const findInput = openFindAndReplace();
+    fireEvent.change(findInput, { target: { value: "find" } });
+    const preview = screen.getByRole("region", { name: "Markdown preview" });
+
+    expect(screen.getByRole("status")).toHaveTextContent("1 of 3");
+    expect(preview.querySelectorAll("mark")).toHaveLength(2);
+    expect(preview.querySelector('mark[aria-current="true"]')).toHaveAttribute(
+      "data-source-start",
+      String(content.indexOf("Find")),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Next match" }));
+    expect(screen.getByRole("status")).toHaveTextContent("2 of 3");
+    expect(preview.querySelector('mark[aria-current="true"]')).toBeNull();
+    expect(editor.selectionStart).toBe(content.indexOf("find"));
+
+    fireEvent.click(screen.getByRole("button", { name: "Next match" }));
+    expect(screen.getByRole("status")).toHaveTextContent("3 of 3");
+    expect(preview.querySelector('mark[aria-current="true"]')).toHaveAttribute(
+      "data-source-start",
+      String(content.lastIndexOf("Find")),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Next match" }));
+    expect(preview.querySelector('mark[aria-current="true"]')).toHaveAttribute(
+      "data-source-start",
+      String(content.indexOf("Find")),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Previous match" }));
+    expect(preview.querySelector('mark[aria-current="true"]')).toHaveAttribute(
+      "data-source-start",
+      String(content.lastIndexOf("Find")),
+    );
+  });
+
+  it("updates Split highlights after replace, replace all, and manual edits", async () => {
+    render(<App />);
+    const editor = await openDocument("C:\\notes\\updates.md", "Find and Find");
+    fireEvent.click(screen.getByRole("button", { name: "Split" }));
+    const findInput = openFindAndReplace();
+    fireEvent.change(findInput, { target: { value: "Find" } });
+    fireEvent.change(screen.getByRole("textbox", { name: "Replace with" }), {
+      target: { value: "Done" },
+    });
+    const preview = screen.getByRole("region", { name: "Markdown preview" });
+
+    fireEvent.click(screen.getByRole("button", { name: "Replace" }));
+    expect(editor).toHaveValue("Done and Find");
+    expect(preview.querySelectorAll("mark")).toHaveLength(1);
+    expect(preview.querySelector('mark[aria-current="true"]')).toHaveTextContent(
+      "Find",
+    );
+
+    fireEvent.change(editor, { target: { value: "Find manual Find" } });
+    expect(preview.querySelectorAll("mark")).toHaveLength(2);
+    expect(screen.getByRole("status")).toHaveTextContent("2 of 2");
+
+    fireEvent.click(screen.getByRole("button", { name: "Replace all" }));
+    expect(preview.querySelector("mark")).toBeNull();
+    expect(fileSystemMocks.writeTextFile).not.toHaveBeenCalled();
+  });
+
+  it("renders no preview marks without an active Split query", async () => {
+    render(<App />);
+    await openDocument("C:\\notes\\states.md", "Find this");
+    fireEvent.click(screen.getByRole("button", { name: "Split" }));
+    const preview = screen.getByRole("region", { name: "Markdown preview" });
+    const findInput = openFindAndReplace();
+    expect(preview.querySelector("mark")).toBeNull();
+
+    fireEvent.change(findInput, { target: { value: "missing" } });
+    expect(preview.querySelector("mark")).toBeNull();
+    fireEvent.change(findInput, { target: { value: "Find" } });
+    expect(preview.querySelectorAll("mark")).toHaveLength(1);
+
+    fireEvent.click(screen.getByRole("button", { name: "Close find and replace" }));
+    expect(preview.querySelector("mark")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Preview" }));
+    expect(screen.getByRole("region", { name: "Markdown preview" }).querySelector("mark"))
+      .toBeNull();
+  });
+
+  it("reveals the active preview mark without creating scroll feedback", async () => {
+    const originalScrollIntoView = Object.getOwnPropertyDescriptor(
+      HTMLElement.prototype,
+      "scrollIntoView",
+    );
+    const scrollIntoView = vi.fn(function (this: HTMLElement) {
+      const preview = this.closest(
+        '[aria-label="Markdown preview"]',
+      ) as HTMLElement;
+      preview.scrollTop = 150;
+    });
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+      configurable: true,
+      value: scrollIntoView,
+    });
+
+    try {
+      render(<App />);
+      const editor = await openDocument(
+        "C:\\notes\\reveal.md",
+        "Find first\n\nFind second",
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Split" }));
+      const preview = screen.getByRole("region", { name: "Markdown preview" });
+      setScrollMetrics(editor, {
+        clientHeight: 200,
+        scrollHeight: 1000,
+        scrollTop: 400,
+      });
+      setScrollMetrics(preview, {
+        clientHeight: 100,
+        scrollHeight: 400,
+      });
+      const findInput = openFindAndReplace();
+      fireEvent.change(findInput, { target: { value: "Find" } });
+
+      expect(scrollIntoView).toHaveBeenCalledOnce();
+      expect(findInput).toHaveFocus();
+      fireEvent.scroll(preview);
+      expect(editor.scrollTop).toBe(400);
+
+      fireEvent.click(screen.getByRole("button", { name: "Next match" }));
+      expect(scrollIntoView).toHaveBeenCalledTimes(2);
+      expect(editor).toHaveFocus();
+      preview.scrollTop = 225;
+      fireEvent.scroll(preview);
+      expect(editor.scrollTop).toBe(600);
+      expect(scrollIntoView).toHaveBeenCalledTimes(2);
+    } finally {
+      if (originalScrollIntoView) {
+        Object.defineProperty(
+          HTMLElement.prototype,
+          "scrollIntoView",
+          originalScrollIntoView,
+        );
+      } else {
+        Reflect.deleteProperty(HTMLElement.prototype, "scrollIntoView");
+      }
+    }
   });
 
   it("finds mixed-case text and regular-expression characters literally", async () => {
@@ -965,6 +1298,13 @@ describe("single-document workflow", () => {
       ),
     );
     const image = screen.getByRole("img", { name: "Diagram" });
+    const findInput = openFindAndReplace();
+    fireEvent.change(findInput, { target: { value: "text" } });
+    expect(
+      screen
+        .getByRole("region", { name: "Markdown preview" })
+        .querySelectorAll("mark"),
+    ).toHaveLength(1);
 
     fireEvent.change(editor, {
       target: {
@@ -973,6 +1313,11 @@ describe("single-document workflow", () => {
     });
 
     expect(screen.getByRole("img", { name: "Diagram" })).toBe(image);
+    expect(
+      screen
+        .getByRole("region", { name: "Markdown preview" })
+        .querySelectorAll("mark"),
+    ).toHaveLength(1);
     expect(coreMocks.invoke).toHaveBeenCalledOnce();
   });
 
@@ -1372,7 +1717,6 @@ describe("single-document workflow", () => {
     for (const options of [
       { altKey: true, ctrlKey: true, key: "s" },
       { key: "s" },
-      { ctrlKey: true, key: "f" },
     ]) {
       const ignoredEvent = new KeyboardEvent("keydown", {
         bubbles: true,

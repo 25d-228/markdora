@@ -2,7 +2,13 @@ import { basename } from "@tauri-apps/api/path";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { confirm, open, save } from "@tauri-apps/plugin-dialog";
 import { readTextFile, writeTextFile } from "@tauri-apps/plugin-fs";
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -29,7 +35,7 @@ type MatchRange = {
   start: number;
 };
 
-type ShortcutAction = "new" | "open" | "save" | "saveAs";
+type ShortcutAction = "find" | "new" | "open" | "save" | "saveAs";
 
 type ScrollPane = "preview" | "source";
 
@@ -154,6 +160,7 @@ function App() {
   const shortcutActionsRef = useRef<
     Record<ShortcutAction, () => void | Promise<void>>
   >({
+    find: () => undefined,
     new: () => undefined,
     open: () => undefined,
     save: () => undefined,
@@ -174,6 +181,9 @@ function App() {
   const activeMatchStart = activeMatch?.start ?? null;
   const activeMatchEnd = activeMatch?.end ?? null;
   const documentContent = document?.content ?? "";
+  const handleActiveMatchReveal = useCallback((scrollTop: number) => {
+    pendingScrollOffsetsRef.current.preview = scrollTop;
+  }, []);
 
   useEffect(() => {
     dirtyRef.current = dirty;
@@ -614,6 +624,7 @@ function App() {
 
   useEffect(() => {
     shortcutActionsRef.current = {
+      find: handleOpenFind,
       new: handleNew,
       open: handleOpen,
       save: handleSave,
@@ -633,6 +644,8 @@ function App() {
         action = "new";
       } else if (!event.shiftKey && key === "o") {
         action = "open";
+      } else if (!event.shiftKey && key === "f") {
+        action = "find";
       } else if (key === "s") {
         action = event.shiftKey ? "saveAs" : "save";
       }
@@ -896,8 +909,14 @@ function App() {
             ) : null}
             {viewMode !== "edit" ? (
               <MarkdownPreview
+                activeMatchStart={
+                  viewMode === "split" ? activeMatchStart : null
+                }
                 content={document.content}
                 documentPath={document.path}
+                findMatches={viewMode === "split" ? matches : []}
+                findQuery={viewMode === "split" ? findValue : ""}
+                onActiveMatchReveal={handleActiveMatchReveal}
                 onExternalLinkError={(linkError) =>
                   setExternalLinkError(
                     `Could not open the external link: ${describeError(linkError)}`,
