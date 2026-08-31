@@ -1,6 +1,14 @@
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import type { Element, ElementContent, Root, Text } from "hast";
+import type {
+  Definition,
+  Link,
+  LinkReference,
+  Nodes as MarkdownNode,
+  Parents as MarkdownParent,
+  Root as MarkdownRoot,
+} from "mdast";
 import {
   createContext,
   type KeyboardEvent,
@@ -52,6 +60,43 @@ type PreviewContextValue = Pick<
 const PreviewContext = createContext<PreviewContextValue | null>(null);
 
 const supportedImageExtension = /\.(?:png|jpe?g|gif|webp|avif)$/i;
+
+function resolveReferenceLinks() {
+  return function transform(tree: MarkdownRoot) {
+    const definitions = new Map<string, Definition>();
+
+    function collectDefinitions(node: MarkdownNode) {
+      if (node.type === "definition" && !definitions.has(node.identifier)) {
+        definitions.set(node.identifier, node);
+      }
+      if ("children" in node) {
+        node.children.forEach(collectDefinitions);
+      }
+    }
+
+    function resolveLinks(node: MarkdownNode) {
+      if (node.type === "linkReference") {
+        const definition = definitions.get(node.identifier);
+        if (definition) {
+          const reference = node as LinkReference;
+          const link = node as unknown as Link;
+          link.type = "link";
+          link.url = definition.url;
+          link.title = definition.title;
+          delete (reference as Partial<LinkReference>).identifier;
+          delete (reference as Partial<LinkReference>).label;
+          delete (reference as Partial<LinkReference>).referenceType;
+        }
+      }
+      if ("children" in node) {
+        (node as MarkdownParent).children.forEach(resolveLinks);
+      }
+    }
+
+    collectDefinitions(tree);
+    resolveLinks(tree);
+  };
+}
 
 function getSourceRange(node: ElementContent | Root): SourceRange | null {
   const start = node.position?.start.offset;
@@ -517,7 +562,7 @@ function MarkdownPreview({
               activeMatchStart,
             ),
           ]}
-          remarkPlugins={[remarkGfm]}
+          remarkPlugins={[remarkGfm, resolveReferenceLinks]}
           skipHtml
           urlTransform={(url, key) => {
             if (key === "href") {
